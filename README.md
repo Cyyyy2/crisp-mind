@@ -31,7 +31,7 @@ Part of the **Crisp Series** for Obsidian by [letschips](https://github.com/lets
   - **高清 PDF**: 生成符合 PDF-1.4 格式的标准 PDF 文档（2x 高清光栅化封装，非矢量），保留真实排版与清晰度，适合长效打印与归档交流。
 - 🔗 **Markdown Outline & Bi-Directional Linking**: 首创 `.mind.md` 混合存储架构，前半部分为纯文本大纲，尾部隔离数据存储。原生支持 Obsidian 全局搜索、快捷切换（Quick Switcher）与反向链接网络。
 - 🛡️ **Local-First & Snapshot Protection**: 导图解析、节点测量、布局运算与导出渲染全部在本地完成，笔记内容不出设备；破坏性改动前自动写入快照防丢。
-- 🔑 **Crisp Suite Ecosystem Synergy**: 基于 Ed25519 非对称公钥密码学实现本地验证，一次激活全套受惠，自动识别并继承同一设备内其它 Crisp 插件的正版授权。
+- 🔑 **Crisp Authorization**: 基于 Ed25519 非对称公钥密码学本地验签。全家桶授权覆盖全部插件；启动时自动扫描仓库内其它 Crisp 插件，采用其中第一个确实包含 Crisp Mind 权限的授权，作用于其它插件的单款授权不会被误继承。
 
 ---
 
@@ -82,8 +82,9 @@ Part of the **Crisp Series** for Obsidian by [letschips](https://github.com/lets
 ## ⚙️ Activation / 授权激活
 
 Crisp Mind 是 **Crisp 插件套件** 的成员之一。
-- 若您已在同一设备中激活过其它 Crisp 插件（如 Crisp Pulse、Crisp Focus、Crisp Visual 等），Crisp Mind 将**自动识别并继承授权**，无需重复配置。
-- 您也可以进入 **设置 → Crisp Mind** 手动输入正版激活码进行验证。
+- 若您已在同一设备中激活过其它 Crisp 插件（如 Crisp Pulse、Crisp Focus、Crisp Visual 等），Crisp Mind 启动时会**自动继承**其中一个授权，无需重复配置。
+- 继承只采用**确实包含 Crisp Mind 权限**的授权：全家桶授权一定可用；仅授权其它单款插件的授权码不会被继承，此时需单独激活 Crisp Mind。
+- 您也可以进入 **设置 → Crisp Mind** 手动输入激活码进行验证。
 
 ---
 

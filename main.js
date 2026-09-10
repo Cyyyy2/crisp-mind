@@ -108,7 +108,7 @@ function getCryptoSubtle(windowObj = (typeof window !== "undefined" ? window : n
   return null;
 }
 
-async function verifyLicenseCode(licenseCode, targetPluginId = "crisp-mind", app = null, windowObj = null) {
+async function verifyLicenseCode(licenseCode, targetPluginId = "crisp-mind", app = null, windowObj = null, options = {}) {
   if (typeof targetPluginId === "object" && targetPluginId !== null && !app) {
     windowObj = targetPluginId;
     targetPluginId = "crisp-mind";
@@ -164,6 +164,13 @@ async function verifyLicenseCode(licenseCode, targetPluginId = "crisp-mind", app
     const sigBytes = base64UrlToUint8Array(sigB64);
     const verified = await subtle.verify({ name: "Ed25519" }, key, sigBytes, payloadBytes);
     if (!verified) return { valid: false, reason: "授权签名无效或伪造" };
+
+    // Inheritance scans several candidate codes, so it must not trigger one device check per
+    // candidate. Local-only mode stops after the cryptographic checks; the license finally
+    // adopted still goes through the online device check via validateCurrentLicense().
+    if (options.online === false) {
+      return { valid: true, payload, message: "本地签名校验通过", source: "local" };
+    }
 
     try {
       const deviceId = app?.appId || (app?.vault?.getName ? "vault-" + encodeURIComponent(app.vault.getName()) : "device-default");
@@ -266,25 +273,41 @@ class CrispMindLicenseManager {
   }
 }
 
-function discoverVaultCrispLicense(app) {
-  if (!app) return null;
-  const crispPlugins = [
-    "crisp-pulse",
-    "crisp-focus",
-    "crisp-file-explorer",
-    "crisp-base",
-    "crisp-recall",
-    "crisp-annotations",
-    "crisp-reading-rail",
-    "crisp-asr",
-    "crisp-visual"
-  ];
-  for (const pid of crispPlugins) {
-    const p = app.plugins?.plugins?.[pid];
-    if (p?.settings?.licenseCode && typeof p.settings.licenseCode === "string" && p.settings.licenseCode.includes(".")) {
-      return p.settings.licenseCode.trim();
-    }
+// Sibling plugins that may hold an inherited Crisp license. Order only affects preference.
+const CRISP_SIBLING_PLUGIN_IDS = [
+  "crisp-mind",
+  "crisp-pulse",
+  "crisp-focus",
+  "crisp-file-explorer",
+  "crisp-base",
+  "crisp-recall",
+  "crisp-annotations",
+  "crisp-reading-rail",
+  "crisp-asr",
+  "crisp-visual"
+];
+
+let lastInheritNote = "";
+
+function collectVaultCrispLicenseCandidates(app) {
+  if (!app) return [];
+  const seen = new Set();
+  const candidates = [];
+  const add = (code) => {
+    if (typeof code !== "string") return;
+    const trimmed = code.trim();
+    if (!trimmed.includes(".") || seen.has(trimmed)) return;
+    seen.add(trimmed);
+    candidates.push(trimmed);
+  };
+
+  // Loaded plugins first: their settings are already parsed in memory.
+  for (const pid of CRISP_SIBLING_PLUGIN_IDS) {
+    if (pid === "crisp-mind") continue;
+    add(app.plugins?.plugins?.[pid]?.settings?.licenseCode);
   }
+
+  // Then on-disk data.json, which also covers plugins that are installed but not loaded.
   try {
     const pathMod = typeof require === "function" ? require("path") : null;
     const fsMod = typeof require === "function" ? require("fs") : null;
@@ -292,23 +315,35 @@ function discoverVaultCrispLicense(app) {
       const basePath = app.vault?.adapter?.basePath || (app.vault?.adapter?.getBasePath ? app.vault.adapter.getBasePath() : "");
       const pluginsDir = basePath ? pathMod.join(basePath, ".obsidian", "plugins") : "";
       if (pluginsDir && fsMod.existsSync(pluginsDir)) {
-        const dirs = fsMod.readdirSync(pluginsDir);
-        for (const d of dirs) {
-          if (d.startsWith("crisp-") && d !== "crisp-mind") {
-            const dataPath = pathMod.join(pluginsDir, d, "data.json");
-            if (fsMod.existsSync(dataPath)) {
-              const raw = fsMod.readFileSync(dataPath, "utf8");
-              const data = JSON.parse(raw);
-              const code = data?.licenseCode || data?.settings?.licenseCode;
-              if (code && typeof code === "string" && code.includes(".")) {
-                return code.trim();
-              }
-            }
-          }
+        for (const d of fsMod.readdirSync(pluginsDir)) {
+          if (!d.startsWith("crisp-") || d === "crisp-mind") continue;
+          const dataPath = pathMod.join(pluginsDir, d, "data.json");
+          if (!fsMod.existsSync(dataPath)) continue;
+          try {
+            const data = JSON.parse(fsMod.readFileSync(dataPath, "utf8"));
+            add(data?.licenseCode || data?.settings?.licenseCode);
+          } catch (e) {}
         }
       }
     }
   } catch (e) {}
+  return candidates;
+}
+
+// Returns a license code that is actually usable here, or null. Candidates are checked locally
+// (no extra network round trips) so a stale or differently-scoped code can no longer shadow a
+// valid one. The adopted code still goes through the online device check afterwards.
+async function discoverVaultCrispLicense(app) {
+  lastInheritNote = "";
+  const candidates = collectVaultCrispLicenseCandidates(app);
+  if (!candidates.length) return null;
+  const reasons = [];
+  for (const code of candidates) {
+    const local = await verifyLicenseCode(code, "crisp-mind", app, null, { online: false });
+    if (local.valid) return code;
+    reasons.push(local.reason);
+  }
+  lastInheritNote = `库内找到 ${candidates.length} 个 Crisp 授权，但均不可用于 Crisp Mind：${reasons[0]}。可在下方手动填写授权码。`;
   return null;
 }
 
@@ -2648,11 +2683,13 @@ class CrispMindPlugin extends Plugin {
     this.licenseManager = new CrispMindLicenseManager(this.app, this.settings);
 
     if (!this.settings.licenseCode) {
-      const vaultLicense = discoverVaultCrispLicense(this.app);
+      const vaultLicense = await discoverVaultCrispLicense(this.app);
       if (vaultLicense) {
         this.settings.licenseCode = vaultLicense;
         await this.saveSettings();
-        console.log("Crisp Mind: 自动继承 Vault 中已激活的 Crisp Suite 授权");
+        console.log("Crisp Mind: 已继承库内可用的 Crisp 授权");
+      } else if (lastInheritNote) {
+        console.warn("Crisp Mind: " + lastInheritNote);
       }
     }
 
@@ -2981,8 +3018,10 @@ class CrispMindSettingTab extends PluginSettingTab {
       statusSetting.setDesc(`✅ 已激活（${verification}，授权给: ${owner}${expiry}）`);
     } else if (this.plugin.settings.licenseCode) {
       statusSetting.setDesc(`❌ 未激活（${status.reason || "授权码无效"}）`);
+    } else if (lastInheritNote) {
+      statusSetting.setDesc(`🔒 未激活。${lastInheritNote}`);
     } else {
-      statusSetting.setDesc("🔒 未激活（输入 Crisp Suite / Crisp Mind 授权码以激活完整功能）");
+      statusSetting.setDesc("🔒 未激活（输入 Crisp 授权码以激活完整功能）");
     }
 
     if (status.valid) {
@@ -3001,7 +3040,7 @@ class CrispMindSettingTab extends PluginSettingTab {
 
     new Setting(licenseGroup)
       .setName("输入授权码")
-      .setDesc("支持 Crisp Suite 系列通用激活码。自动识别并继承仓库中其他 Crisp 插件的已激活授权。")
+      .setDesc("支持 Crisp 系列激活码（全家桶或单款均可）。启动时自动扫描仓库内其他 Crisp 插件，采用其中第一个确实包含 Crisp Mind 权限的授权；单款授权不含 Crisp Mind 时不会被继承。")
       .addText((text) => {
         text.inputEl.type = "password";
         text
