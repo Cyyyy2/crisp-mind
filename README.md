@@ -6,6 +6,7 @@
 Part of the **Crisp Series** for Obsidian by [letschips](https://github.com/letschips).
 
 [![Obsidian](https://img.shields.io/badge/Obsidian-v1.6.0%2B-blue.svg)](https://obsidian.md)
+[![Platform](https://img.shields.io/badge/Platform-Desktop%20Only-lightgrey.svg)](manifest.json)
 [![License](https://img.shields.io/badge/license-Proprietary-red.svg)](LICENSE)
 [![Crisp Suite](https://img.shields.io/badge/Crisp-Suite-orange.svg)](https://github.com/letschips)
 
@@ -27,7 +28,7 @@ Part of the **Crisp Series** for Obsidian by [letschips](https://github.com/lets
 - 📤 **High-Fidelity Multi-Format Export**:
   - **矢量 SVG**: 精准计算全局包围盒，原生支持深浅主题背景与高精度矢量曲线。
   - **2x 高清 PNG**: Retina 级超清位图渲染，自动采用纯净背景，便于分享至社交媒体与排版平台。
-  - **矢量 PDF**: 输出标准 PDF-1.4 格式矢量文档，文字与几何图形无损清晰，方便长效打印与归档。
+  - **高清 PDF**: 生成符合 PDF-1.4 格式的标准 PDF 文档（2x 高清光栅化封装，非矢量），保留真实排版与清晰度，适合长效打印与归档交流。
 - 🔗 **Markdown Outline & Bi-Directional Linking**: 首创 `.mind.md` 混合存储架构，前半部分为纯文本大纲，尾部隔离数据存储。原生支持 Obsidian 全局搜索、快捷切换（Quick Switcher）与反向链接网络。
 - 🛡️ **100% Local-First & Snapshot Protection**: 所有数据运算与渲染均在本地完成，破坏性改动前自动写入快照防丢，无外部网络依赖。
 - 🔑 **Crisp Suite Ecosystem Synergy**: 基于 Ed25519 非对称公钥密码学实现本地验证，一次激活全套受惠，自动识别并继承同一设备内其它 Crisp 插件的正版授权。

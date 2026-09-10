@@ -9,7 +9,7 @@
   "scripts": {
     "test": "node --test tests/*.test.cjs",
     "check": "node --check main.js && node --test tests/*.test.cjs",
-    "sync": "cp main.js styles.css manifest.json \"/Users/xiaohetongxue/Library/Mobile Documents/iCloud~md~obsidian/Documents/AI-native Knowledge System/.obsidian/plugins/crisp-mind/\""
+    "sync": "cp main.js styles.css manifest.json README.md package.json \"/Users/xiaohetongxue/Library/Mobile Documents/iCloud~md~obsidian/Documents/AI-native Knowledge System/.obsidian/plugins/crisp-mind/\""
   },
   "keywords": [
     "obsidian",
