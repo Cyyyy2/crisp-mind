@@ -737,6 +737,16 @@ function getComputedThemeConfig(themeName = "crisp-obsidian") {
    Crisp Mind SVG Canvas Controller
    ========================================================================== */
 
+function inlineEditorFrame(node, scale, translateX, translateY, viewportWidth, viewportHeight) {
+  const w = viewportWidth || 800, h = viewportHeight || 600;
+  const fittedScale = Math.min(scale, Math.max(0.05, (w - 16) / node._w), Math.max(0.05, (h - 16) / node._h));
+  const width = node._w * fittedScale, height = node._h * fittedScale;
+  const x = node._x * fittedScale + translateX, y = node._y * fittedScale + translateY;
+  const dx = x < 8 ? 8 - x : x + width > w - 8 ? w - 8 - x - width : 0;
+  const dy = y < 8 ? 8 - y : y + height > h - 8 ? h - 8 - y - height : 0;
+  return {left: x + dx, top: y + dy, width, height, scale: fittedScale, translateX: translateX + dx, translateY: translateY + dy};
+}
+
 class CrispMindCanvas {
   constructor(containerEl, docData, options = {}) {
     this.container = containerEl;
@@ -1356,12 +1366,14 @@ class CrispMindCanvas {
     const cached = this.nodeElements ? this.nodeElements.get(node.id) : null;
     if (cached && cached._signature === signature) {
       cached._mindNode = node;
+      cached.style.visibility = this.editorNodeId === node.id ? "hidden" : "";
       cached.setAttribute("transform", `translate(${node._x}, ${node._y})`);
       return;
     }
     cached?.remove();
     const g = this.document.createElementNS("http://www.w3.org/2000/svg", "g");
     g._mindNode = node; g._signature = signature;
+    g.style.visibility = this.editorNodeId === node.id ? "hidden" : "";
     if (isCompleted && g.classList?.add) g.classList.add("is-task-completed");
     if (this.nodeElements) this.nodeElements.set(node.id, g);
     g.setAttribute("transform", `translate(${node._x}, ${node._y})`);
@@ -1498,20 +1510,30 @@ class CrispMindCanvas {
     input.value = currentText;
     input.className = "crisp-mind-inline-editor";
 
-    const screenX = node._x * this.scale + this.translateX;
-    const screenY = node._y * this.scale + this.translateY;
-
-    input.style.left = `${screenX}px`;
-    input.style.top = `${screenY}px`;
-    input.style.width = `${Math.min(Math.max(node._w * this.scale, 180), Math.max(120, this.container.clientWidth - 24))}px`;
-    input.style.left = `${Math.max(8, Math.min(screenX, this.container.clientWidth - parseFloat(input.style.width) - 8))}px`;
-    input.style.top = `${Math.max(8, Math.min(screenY, this.container.clientHeight - 52))}px`;
-
+    // Edit the node itself: reserve exactly its existing bounds and move the
+    // canvas into view, instead of widening/clamping an unrelated overlay.
+    if (!Number.isFinite(node._w)) this.calculateLayout();
+    const frame = inlineEditorFrame(node, this.scale, this.translateX, this.translateY, this.container.clientWidth, this.container.clientHeight);
+    this.scale = frame.scale;
+    this.translateX = frame.translateX; this.translateY = frame.translateY;
+    if (this.viewportGroup) this.updateTransform();
+    this.options.onZoom?.(this.scale);
+    Object.assign(input.style, {
+      left: `${frame.left}px`, top: `${frame.top}px`, width: `${frame.width}px`, height: `${frame.height}px`,
+      fontSize: `${(node.id === this.docData.root.id ? 14 : 13) * this.scale}px`,
+      borderRadius: `${(this.theme.borderRadius || 8) * this.scale}px`,
+      padding: `0 ${Math.max(4, 14 * this.scale)}px`
+    });
+    const nodeEl = this.nodeElements?.get(node.id);
+    if (nodeEl) nodeEl.style.visibility = "hidden";
     const labelEl = this.nodeElements?.get(node.id)?.querySelector(".crisp-mind-node-label");
     if (labelEl) labelEl.style.visibility = "hidden";
     this.editorNodeId = node.id;
     const restoreLabel = () => {
       this.editorNodeId = null;
+      if (nodeEl) nodeEl.style.visibility = "";
+      const currentNode = this.nodeElements?.get(node.id);
+      if (currentNode) currentNode.style.visibility = "";
       if (labelEl) labelEl.style.visibility = "";
       const currentLabel = this.nodeElements?.get(node.id)?.querySelector(".crisp-mind-node-label");
       if (currentLabel) currentLabel.style.visibility = "";
@@ -1575,6 +1597,18 @@ class CrispMindCanvas {
       "transform",
       `translate(${this.translateX}, ${this.translateY}) scale(${this.scale})`
     );
+    // Deferred initial fit and any later viewport change must move the editor too.
+    const node = this.editorNodeId && this.findNode(this.editorNodeId);
+    if (this.editor && node) {
+      Object.assign(this.editor.style, {
+        left: `${node._x * this.scale + this.translateX}px`,
+        top: `${node._y * this.scale + this.translateY}px`,
+        width: `${node._w * this.scale}px`, height: `${node._h * this.scale}px`,
+        fontSize: `${(node.id === this.docData.root.id ? 14 : 13) * this.scale}px`,
+        borderRadius: `${(this.theme.borderRadius || 8) * this.scale}px`,
+        padding: `0 ${Math.max(4, 14 * this.scale)}px`
+      });
+    }
   }
 
   listen(target, type, callback, options) {
@@ -1583,6 +1617,8 @@ class CrispMindCanvas {
   }
 
   destroy() {
+    // Finish editing before detaching the input; blur cleanup owns its removal.
+    this.commitEditor?.();
     this.disposers.forEach(dispose => dispose());
     this.disposers = [];
     this.isPanning = false;

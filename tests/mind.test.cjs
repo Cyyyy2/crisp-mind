@@ -118,7 +118,7 @@ function setupTestContext(publicKeyPem) {
     source = source.replace(/-----BEGIN PUBLIC KEY-----[\s\S]*?-----END PUBLIC KEY-----/, publicKeyPem.trim());
   }
   const code = source +
-    "\nmodule.exports.helpers = { normalizeMindLinkText, mindNodeLink, inspectMindSource, CrispMindCanvas, CrispMindEditView, parseMindMarkdown, assembleMindMarkdown, markdownOutlineToTree, treeToMarkdownOutline, validateAndRepairTree, extractNodeToTopicContent, getComputedThemeConfig, verifyLicenseCode, discoverVaultCrispLicense, collectVaultCrispLicenseCandidates, CrispMindLicenseManager, renderAboutCard, CrispMindExporter };";
+    "\nmodule.exports.helpers = { inlineEditorFrame, normalizeMindLinkText, mindNodeLink, inspectMindSource, CrispMindCanvas, CrispMindEditView, parseMindMarkdown, assembleMindMarkdown, markdownOutlineToTree, treeToMarkdownOutline, validateAndRepairTree, extractNodeToTopicContent, getComputedThemeConfig, verifyLicenseCode, discoverVaultCrispLicense, collectVaultCrispLicenseCandidates, CrispMindLicenseManager, renderAboutCard, CrispMindExporter };";
 
   vm.runInNewContext(code, context);
   return context.module.exports;
@@ -821,3 +821,26 @@ test('46. CrispMindExporter buildPdfBinary outputs standard valid PDF-1.4 binary
 });
 
 
+
+test('editor frame matches node geometry at 125 percent without minimum-width inflation',()=>{
+  const {helpers}=setupTestContext();
+  const frame=helpers.inlineEditorFrame({_x:100,_y:80,_w:100,_h:38},1.25,0,0,800,600);
+  assert.equal(frame.width,125);assert.equal(frame.height,47.5);
+  assert.equal(frame.left,125);assert.equal(frame.top,100);
+});
+test('editor near the viewport edge pans the whole canvas rather than detaching from its node',()=>{
+  const {helpers}=setupTestContext();const node={_x:600,_y:500,_w:160,_h:38};
+  const frame=helpers.inlineEditorFrame(node,1.25,0,0,800,600);
+  assert.equal(frame.left,node._x*frame.scale+frame.translateX);
+  assert.equal(frame.top,node._y*frame.scale+frame.translateY);
+  assert.ok(frame.left+frame.width<=792);assert.ok(frame.top+frame.height<=592);
+});
+test('viewport transform keeps active editor aligned with its node',()=>{
+  const {canvas}=canvasFixture();canvas.calculateLayout();
+  const n=canvas.docData.root.children[0];canvas.editorNodeId=n.id;canvas.editor={style:{}};
+  canvas.viewportGroup={setAttribute(){}};canvas.scale=1.25;canvas.translateX=90;canvas.translateY=70;
+  canvas.updateTransform();
+  assert.equal(canvas.editor.style.left,`${n._x*1.25+90}px`);
+  assert.equal(canvas.editor.style.top,`${n._y*1.25+70}px`);
+  assert.equal(canvas.editor.style.height,`${n._h*1.25}px`);
+});
