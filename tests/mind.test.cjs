@@ -289,6 +289,37 @@ test("serialization excludes calculated geometry", () => {
   assert.ok(!text.includes('"_x"'));
   assert.ok(!text.includes('"_treeHeight"'));
 });
+test("every layout keeps its computed geometry out of the serialized file", () => {
+  const transient = ["_x","_y","_w","_h","_treeHeight","_treeWidth","_lines",
+    "_isUpper","_spineConnectX","_spineConnectY","_boneTipX","_boneTipY","_boneConnectX","_boneConnectY"];
+  for (const layout of ["logicalStructure","mindMap","organizationStructure","catalogOrganization","timeline","fishbone"]) {
+    const { canvas, helpers } = canvasFixture();
+    canvas.docData.root.children = [
+      { id:"b1", data:{text:"人员因素"}, children:[{ id:"s1", data:{text:"培训不足"}, children:[] }] },
+      { id:"b2", data:{text:"设备因素"}, children:[{ id:"s2", data:{text:"老化故障"}, children:[] }] }
+    ];
+    canvas.layout = layout;
+    canvas.calculateLayout();
+    const text = helpers.assembleMindMarkdown({data:canvas.docData});
+    const leaked = transient.filter(k => text.includes('"' + k + '"'));
+    assert.deepEqual(leaked, [], layout + " leaked layout geometry: " + leaked.join(", "));
+  }
+});
+test("switching away from fishbone leaves no bone residue in the file", () => {
+  const { canvas, helpers } = canvasFixture();
+  canvas.docData.root.children = [
+    { id:"b1", data:{text:"人员因素"}, children:[] },
+    { id:"b2", data:{text:"设备因素"}, children:[] }
+  ];
+  canvas.setLayout("fishbone");
+  assert.ok(canvas.docData.root.children[0]._spineConnectX, "fishbone should compute spine coordinates first");
+  canvas.setLayout("logicalStructure");
+  const text = helpers.assembleMindMarkdown({data:canvas.docData});
+  for (const key of ["_isUpper","_spineConnectX","_spineConnectY","_boneTipX","_boneTipY","_boneConnectX","_boneConnectY"]) {
+    assert.ok(!text.includes('"' + key + '"'), "residual " + key + " survived the layout switch");
+  }
+  assert.ok(!JSON.stringify(canvas.history).includes('"_spineConnectX"'), "history must not carry bone geometry");
+});
 test("ordinary Markdown view returns exact original content", () => {
   const { helpers } = setupTestContext();
   const v = Object.create(helpers.CrispMindEditView.prototype);

@@ -505,7 +505,14 @@ function mindNodeLink(text, vaultName) {
   return { target: match[1], display: normalized.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_, target, alias) => alias || target) };
 }
 
-const MIND_GEOMETRY_KEYS = new Set(["_x", "_y", "_w", "_h", "_treeHeight", "_treeWidth", "_lines"]);
+// Layout-computed, transient geometry. Never written to disk and never kept in history.
+// The fishbone keys matter: calculateLayout only overwrites _x/_y when the layout changes,
+// so unstripped bone/spine coordinates from a previous fishbone pass would stay in .mind.md forever.
+const MIND_GEOMETRY_KEYS = new Set([
+  "_x", "_y", "_w", "_h", "_treeHeight", "_treeWidth", "_lines",
+  "_isUpper", "_spineConnectX", "_spineConnectY",
+  "_boneTipX", "_boneTipY", "_boneConnectX", "_boneConnectY"
+]);
 function cleanMindData(data) {
   return JSON.parse(JSON.stringify(data, (key, value) => MIND_GEOMETRY_KEYS.has(key) ? undefined : value));
 }
