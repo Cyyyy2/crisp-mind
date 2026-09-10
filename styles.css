@@ -1,0 +1,718 @@
+/* ==========================================================================
+   Crisp Mind — Obsidian-Native Thought Graphs Stylesheet
+   Crafted for the Crisp Plugin Suite · Aligned with Baseline UI
+   ========================================================================== */
+
+/* --- Root View Container --- */
+.crisp-mind-view {
+  width: 100%;
+  height: 100%;
+  position: relative;
+  overflow: hidden;
+  background-color: var(--background-primary);
+  color: var(--text-normal);
+  font-family: var(--font-interface);
+  user-select: none;
+}
+
+body.is-translucent .crisp-mind-view {
+  background-color: transparent !important;
+}
+
+/* --- Canvas Surface --- */
+.crisp-mind-canvas {
+  width: 100%;
+  height: 100%;
+  position: absolute;
+  top: 0;
+  left: 0;
+  cursor: grab;
+  outline: none;
+}
+
+.crisp-mind-canvas:active {
+  cursor: grabbing;
+}
+
+.crisp-mind-canvas svg {
+  display: block;
+  overflow: visible;
+}
+
+.crisp-mind-canvas rect {
+  filter: none !important;
+}
+
+/* --- Completed Task Node Polish --- */
+.crisp-mind-canvas g.is-task-completed text {
+  opacity: 0.55;
+  text-decoration: line-through;
+}
+
+.crisp-mind-canvas g.is-task-completed rect {
+  opacity: 0.88;
+}
+
+/* --- Floating Pill Toolbar --- */
+.crisp-mind-floating-toolbar {
+  position: absolute;
+  bottom: 28px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 5px 8px;
+  max-width: calc(100% - 32px);
+  width: max-content;
+  flex-wrap: wrap;
+  justify-content: center;
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08), 0 1px 3px rgba(0, 0, 0, 0.04);
+  border-radius: var(--radius-l, 12px);
+  z-index: 50;
+  transition: opacity 0.2s ease, transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.2s ease;
+}
+
+.crisp-mind-floating-toolbar:hover {
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12), 0 2px 6px rgba(0, 0, 0, 0.06);
+}
+
+.crisp-mind-floating-toolbar.toolbar-top {
+  bottom: auto;
+  top: 36px;
+}
+
+/* --- Toolbar Buttons --- */
+.crisp-mind-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-radius: var(--radius-m, 7px);
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.crisp-mind-btn:hover {
+  background-color: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.crisp-mind-btn:active {
+  background-color: var(--background-modifier-active-hover);
+}
+
+.crisp-mind-btn.active {
+  background-color: var(--interactive-accent);
+  color: var(--text-on-accent, #ffffff);
+}
+
+.crisp-mind-btn svg {
+  width: 16px;
+  height: 16px;
+  stroke-width: 1.85;
+}
+
+.crisp-mind-view button:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 1px;
+}
+
+/* --- Separator --- */
+.crisp-mind-divider {
+  width: 1px;
+  height: 16px;
+  margin: 0 3px;
+  background-color: var(--background-modifier-border);
+  flex-shrink: 0;
+}
+
+/* --- Zoom Indicator --- */
+.crisp-mind-zoom-badge {
+  font-family: var(--font-interface);
+  font-size: var(--font-ui-smaller, 11px);
+  font-weight: 550;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  padding: 0 6px;
+  min-width: 44px;
+  height: 32px;
+  text-align: center;
+  cursor: pointer;
+  border: 0;
+  background: transparent;
+  border-radius: var(--radius-m, 7px);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.crisp-mind-zoom-badge:hover {
+  background-color: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+/* --- Node Floating Action Island --- */
+.crisp-mind-node-island {
+  position: absolute;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 4px 6px;
+  max-width: calc(100% - 16px);
+  flex-wrap: wrap;
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m, 9px);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.14), 0 2px 6px rgba(0, 0, 0, 0.06);
+  z-index: 60;
+  pointer-events: auto;
+}
+
+.crisp-mind-island-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  flex: 0 0 auto;
+  width: auto;
+  min-width: 54px;
+  height: 28px;
+  padding: 0 8px;
+  gap: 5px;
+  font-family: var(--font-interface);
+  font-size: 12px;
+  line-height: 1;
+  font-weight: 500;
+  white-space: nowrap;
+  color: var(--text-normal);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-s, 5px);
+  cursor: pointer;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.crisp-mind-island-btn:hover {
+  background-color: var(--background-modifier-hover);
+}
+
+.crisp-mind-island-btn[aria-pressed="true"] {
+  color: var(--text-accent);
+  background: var(--background-modifier-hover);
+}
+
+.crisp-mind-action-icon,
+.crisp-mind-action-icon svg {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  padding: 0;
+  stroke-width: 2;
+}
+
+/* --- Node Element Styling & Obsidian Wikilinks --- */
+.crisp-mind-node-text {
+  user-select: text;
+  word-break: break-word;
+}
+
+.crisp-mind-wikilink {
+  color: var(--link-color, var(--color-accent));
+  text-decoration: underline;
+  text-decoration-color: rgba(var(--color-accent-rgb, 128, 128, 128), 0.35);
+  cursor: pointer;
+  transition: opacity 0.15s ease;
+}
+
+.crisp-mind-wikilink:hover {
+  opacity: 0.8;
+  text-decoration-color: var(--link-color, var(--color-accent));
+}
+
+/* --- Inline Editor Popover --- */
+.crisp-mind-view input.crisp-mind-inline-editor {
+  position: absolute;
+  min-width: 120px;
+  min-height: 36px;
+  font-size: 13px;
+  line-height: 1.4;
+  padding: 6px 10px !important;
+  border: 2px solid var(--interactive-accent) !important;
+  background: var(--background-primary, #ffffff) !important;
+  color: var(--text-normal) !important;
+  border-radius: var(--radius-s, 6px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12) !important;
+  outline: none;
+  font-family: var(--font-interface);
+  opacity: 1 !important;
+  box-sizing: border-box;
+  text-shadow: none !important;
+  z-index: 70;
+}
+
+/* --- Status & Hint Affordances --- */
+.crisp-mind-save-status {
+  position: absolute;
+  top: 12px;
+  left: 16px;
+  right: 16px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+  pointer-events: none;
+  z-index: 40;
+}
+
+.crisp-mind-save-status.is-error {
+  pointer-events: auto;
+  color: var(--text-error);
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-error);
+  padding: 8px 12px;
+  border-radius: var(--radius-m, 8px);
+}
+
+.crisp-mind-hint {
+  position: absolute;
+  bottom: 10px;
+  left: 16px;
+  right: 16px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 18px;
+  pointer-events: none;
+}
+
+.crisp-mind-view .crisp-mind-help-button {
+  pointer-events: auto;
+  height: 24px;
+  min-height: 24px;
+  padding: 0 8px;
+  border: 0;
+  box-shadow: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  border-radius: var(--radius-s, 4px);
+  cursor: pointer;
+}
+
+.crisp-mind-view .crisp-mind-help-button:hover {
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
+}
+
+.crisp-mind-help-row {
+  display: grid;
+  grid-template-columns: minmax(110px, 1fr) minmax(0, 2fr);
+  gap: 16px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.crisp-mind-help-row > span:last-child {
+  color: var(--text-muted);
+}
+
+.crisp-mind-accessible-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* --- Drag & Drop Cues --- */
+.crisp-mind-drag-hint {
+  position: absolute;
+  z-index: 70;
+  pointer-events: none;
+  background: var(--background-primary);
+  color: var(--text-normal);
+  padding: 6px 10px;
+  border: 1px solid var(--interactive-accent);
+  border-radius: var(--radius-m, 8px);
+  font-size: 12px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+}
+
+.crisp-mind-canvas [data-drop] > rect {
+  stroke: var(--interactive-accent);
+  stroke-width: 3;
+  stroke-dasharray: 5 3;
+}
+
+.crisp-mind-canvas [data-drop="before"] > rect {
+  stroke-dasharray: 2 2;
+}
+
+/* --- Collapse & Branch Controls --- */
+.crisp-mind-collapse {
+  cursor: pointer;
+}
+
+.crisp-mind-collapse:hover circle {
+  stroke: var(--interactive-accent);
+  stroke-width: 2;
+}
+
+.crisp-mind-recovery-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-block: 10px;
+}
+
+.crisp-mind-link-error {
+  color: var(--text-error);
+  font-size: 13px;
+  margin-top: 4px;
+}
+
+/* --- Status Bar Item --- */
+.crisp-mind-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  padding: 0 4px;
+  font-variant-numeric: tabular-nums;
+  border-radius: var(--radius-s);
+  transition: background-color 0.15s ease, opacity 0.15s ease;
+}
+
+.crisp-mind-status:hover {
+  background-color: var(--background-modifier-hover);
+  color: var(--text-accent);
+}
+
+.crisp-mind-status-icon {
+  display: inline-flex;
+  align-items: center;
+  color: var(--color-accent);
+}
+
+.crisp-mind-status-icon svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* --- Zen Focus Mode --- */
+.crisp-mind-view.zen-mode .crisp-mind-floating-toolbar {
+  opacity: 0.2;
+  transform: translateX(-50%) translateY(10px);
+}
+
+.crisp-mind-view.zen-mode .crisp-mind-floating-toolbar:hover {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+/* ==========================================================================
+   Crisp Suite Settings Architecture (Collapsible Cards & About Attribution)
+   ========================================================================== */
+
+.crisp-mind-settings-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+
+.crisp-mind-settings-header h2 {
+  margin: 0;
+  font-size: 1.35rem;
+  font-weight: 650;
+}
+
+.crisp-mind-settings-logo {
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.crisp-mind-settings-logo svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.crisp-mind-settings-subhead {
+  color: var(--text-muted);
+  font-size: 0.88rem;
+  margin-top: 0;
+  margin-bottom: 1.25rem;
+  line-height: 1.45;
+}
+
+/* Collapsible Settings Cards */
+.crisp-mind-setting-card {
+  margin-bottom: 0.85rem;
+  border-radius: 12px;
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  overflow: hidden;
+  transition: background 0.24s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.24s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.24s ease;
+}
+
+.crisp-mind-setting-card.is-open {
+  background: var(--background-primary-alt);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.03);
+}
+
+.crisp-mind-setting-card__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.85rem 1.15rem;
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+  transition: background 0.15s ease;
+}
+
+.crisp-mind-setting-card__header:hover {
+  background: var(--background-modifier-hover);
+}
+
+.crisp-mind-setting-card__header::-webkit-details-marker {
+  display: none;
+}
+
+.crisp-mind-setting-card__title-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.18rem;
+}
+
+.crisp-mind-setting-card__title {
+  font-weight: 620;
+  font-size: 0.96rem;
+  color: var(--text-normal);
+  line-height: 1.25;
+}
+
+.crisp-mind-setting-card__desc {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  line-height: 1.35;
+}
+
+.crisp-mind-setting-card__chevron {
+  width: 1.4rem;
+  height: 1.4rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  border-radius: 50%;
+  transition: background 0.15s ease, color 0.15s ease;
+  flex-shrink: 0;
+}
+
+.crisp-mind-setting-card__header:hover .crisp-mind-setting-card__chevron {
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
+}
+
+.crisp-mind-setting-card__chevron::after {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform 0.26s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.crisp-mind-setting-card.is-open .crisp-mind-setting-card__chevron::after {
+  transform: rotate(45deg);
+}
+
+.crisp-mind-setting-card__content-wrapper {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.24s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.crisp-mind-setting-card.is-open .crisp-mind-setting-card__content-wrapper {
+  grid-template-rows: 1fr;
+}
+
+.crisp-mind-setting-card__body {
+  overflow: hidden;
+  padding: 0 1.15rem;
+  opacity: 0;
+  transform: translateY(-8px);
+  transition: opacity 0.2s ease, transform 0.24s cubic-bezier(0.16, 1, 0.3, 1), padding 0.24s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.crisp-mind-setting-card.is-open .crisp-mind-setting-card__body {
+  padding: 0.6rem 1.15rem 1rem;
+  opacity: 1;
+  transform: translateY(0);
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.crisp-mind-setting-card__body .setting-item {
+  border-top: 0 !important;
+  border-bottom: 0 !important;
+  padding-top: 0.45rem;
+  padding-bottom: 0.45rem;
+}
+
+.crisp-mind-setting-card select {
+  max-width: 280px;
+  text-overflow: ellipsis;
+}
+
+/* About Author & Plugin Card */
+.crisp-mind-about {
+  margin-top: 1.25rem;
+  padding: 1rem 1.15rem;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 12px;
+  background:
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--interactive-accent) 7%, transparent),
+      transparent 58%
+    ),
+    var(--background-secondary);
+}
+
+.crisp-mind-about__title,
+.crisp-mind-about__description,
+.crisp-mind-about__author {
+  margin: 0;
+}
+
+.crisp-mind-about__title {
+  color: var(--text-normal);
+  font-size: 0.96rem;
+  font-weight: 650;
+}
+
+.crisp-mind-about__description {
+  margin-top: 0.38rem;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+.crisp-mind-about__meta {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-top: 0.72rem;
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller);
+}
+
+.crisp-mind-about__author-link {
+  color: var(--text-accent);
+  font-weight: 550;
+  text-decoration: none;
+}
+
+.crisp-mind-about__author-link:hover {
+  text-decoration: underline;
+}
+
+.crisp-mind-about__version {
+  font-variant-numeric: tabular-nums;
+  opacity: 0.8;
+}
+
+/* --- Export Modal Styling (Baseline Tokens) --- */
+.crisp-mind-export-modal {
+  padding: 12px 16px;
+}
+
+.crisp-mind-modal__title {
+  margin: 0 0 6px 0;
+  font-size: 1.15rem;
+  font-weight: 600;
+  color: var(--text-normal);
+}
+
+.crisp-mind-modal__desc {
+  margin: 0 0 16px 0;
+  font-size: 0.84rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.crisp-mind-modal__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.crisp-mind-modal__actions button {
+  min-width: 120px;
+  border-radius: var(--radius-m, 8px);
+  padding: 7px 14px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: opacity 0.15s ease, transform 0.1s ease;
+}
+
+.crisp-mind-modal__actions button:hover {
+  opacity: 0.92;
+}
+
+.crisp-mind-modal__actions button:active {
+  transform: scale(0.98);
+}
+
+/* --- Responsive & Reduced Motion --- */
+@media (max-width: 600px) {
+  .crisp-mind-floating-toolbar {
+    max-width: calc(100% - 16px);
+  }
+  .crisp-mind-hint {
+    font-size: 10px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .crisp-mind-view *,
+  .crisp-mind-view *::before,
+  .crisp-mind-view *::after {
+    transition: none !important;
+    animation: none !important;
+  }
+  .crisp-mind-setting-card,
+  .crisp-mind-setting-card__body,
+  .crisp-mind-setting-card__chevron::after,
+  .crisp-mind-setting-card__content-wrapper {
+    transition: none !important;
+  }
+}

@@ -1,0 +1,7 @@
+data.json
+node_modules/
+*.bak-*
+.DS_Store
+docs/
+ROUND1.md
+DELIVERY-*.md
