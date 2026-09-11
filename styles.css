@@ -67,16 +67,19 @@ body.is-translucent .crisp-mind-view {
   width: max-content;
   flex-wrap: wrap;
   justify-content: center;
-  background: var(--background-primary);
-  border: 1px solid var(--background-modifier-border);
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08), 0 1px 3px rgba(0, 0, 0, 0.04);
+  background: color-mix(in srgb, var(--background-primary) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--text-normal) 12%, transparent);
+  /* Reuse native window glass; nested backdrop blur causes macOS SVG ghosting. */
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.08);
   border-radius: var(--radius-l, 12px);
   z-index: 50;
   transition: opacity 0.2s ease, transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.2s ease;
 }
 
 .crisp-mind-floating-toolbar:hover {
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12), 0 2px 6px rgba(0, 0, 0, 0.06);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.10);
 }
 
 .crisp-mind-floating-toolbar.toolbar-top {
@@ -159,6 +162,33 @@ body.is-translucent .crisp-mind-view {
 .crisp-mind-zoom-badge:hover {
   background-color: var(--background-modifier-hover);
   color: var(--text-normal);
+}
+
+/* Keep Baseline's native button fill/shadow out of this glass toolbar only.
+   Icons remain full-contrast; color appears on interaction, not at rest. */
+.crisp-mind-floating-toolbar > button:is(.crisp-mind-btn, .crisp-mind-zoom-badge) {
+  background: transparent !important;
+  box-shadow: none !important;
+  border: 0;
+  color: var(--text-normal);
+}
+
+.crisp-mind-floating-toolbar > button:is(.crisp-mind-btn, .crisp-mind-zoom-badge):hover {
+  background: color-mix(in srgb, var(--text-normal) 8%, transparent) !important;
+}
+
+.crisp-mind-floating-toolbar > button:is(.crisp-mind-btn, .crisp-mind-zoom-badge):active {
+  background: color-mix(in srgb, var(--text-normal) 14%, transparent) !important;
+}
+
+.crisp-mind-floating-toolbar > button.crisp-mind-btn.active {
+  background: color-mix(in srgb, var(--interactive-accent) 18%, transparent) !important;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--interactive-accent) 40%, transparent) !important;
+  color: var(--text-normal);
+}
+
+.crisp-mind-floating-toolbar > .crisp-mind-divider {
+  background: color-mix(in srgb, var(--text-normal) 14%, transparent);
 }
 
 /* --- Node Floating Action Island --- */
