@@ -599,7 +599,7 @@ function savedViewFixture() {
   let disk=helpers.assembleMindMarkdown(helpers.parseMindMarkdown('# Root\n- One'));
   const backups=[];let fail=false;
   v.file={path:'test.mind.md',basename:'test.mind',parent:{path:''}};
-  v.plugin={settings:{autoBackup:true},manifest:{id:'crisp-mind'}};
+  v.plugin={settings:{autoBackup:true},manifest:{id:'crisp-mind'},isLicensed:()=>true};
   v.app={vault:{configDir:'.obsidian',adapter:{exists:async()=>true,mkdir:async()=>{},write:async(p,t)=>backups.push(JSON.parse(t))},process:async(file,fn)=>{if(fail)throw Error('disk full');disk=fn(disk);}}};
   v.initViewUI=()=>{};v.requestSave=()=>{};v.notifyPulseContribution=()=>{};
   v.setViewData(disk,true);v.mindDoc.data.root.data.text='Changed';v.dirty=true;
@@ -627,6 +627,18 @@ test('external update while dirty does not replace local edits',()=>{
 test('corrupt managed file remains read-only and byte-preserved',()=>{
   const {v}=savedViewFixture();v.dirty=false;const raw='BROKEN';v.setViewData(raw,true);
   assert.equal(v.readOnly,true);assert.equal(v.getViewData(),raw);
+});
+test('unlicensed mind views open read-only and keep on-disk content unchanged',async()=>{
+  const f=savedViewFixture();
+  f.v.plugin.isLicensed=()=>false;
+  f.v.setViewData(f.v.originalData,true);
+  assert.equal(f.v.readOnly,true);
+  f.v.mindDoc.data.root.data.text='Should not persist';
+  f.v.dirty=true;
+  assert.equal(f.v.getViewData(),f.v.originalData);
+  await f.v.save();
+  assert.ok(f.disk().includes('# Root'));
+  assert.ok(!f.disk().includes('Should not persist'));
 });
 
 test('read-only blocks structural mutation and undo',()=>{

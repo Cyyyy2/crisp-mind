@@ -93,6 +93,7 @@ Part of the **Crisp Series** for Obsidian by [letschips](https://github.com/lets
 ## ⚙️ Activation / 授权激活
 
 Crisp Mind 是 **Crisp 插件套件** 的成员之一。
+- 未激活时可打开并只读预览 `.mind.md`、搜索和大纲导航；新建、编辑、保存、样式备注、关系边界概要、布局主题、演示与导出需要有效授权。
 - 若您已在同一设备中激活过其它 Crisp 插件（如 Crisp Pulse、Crisp Focus、Crisp Visual 等），Crisp Mind 启动时会**自动继承**其中一个授权，无需重复配置。
 - 继承只采用**确实包含 Crisp Mind 权限**的授权：全家桶授权一定可用；仅授权其它单款插件的授权码不会被继承，此时需单独激活 Crisp Mind。
 - 您也可以进入 **设置 → Crisp Mind** 手动输入激活码进行验证。

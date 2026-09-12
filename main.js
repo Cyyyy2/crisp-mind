@@ -234,6 +234,10 @@ class CrispMindLicenseManager {
     return this.status;
   }
 
+  isLicensed() {
+    return !!this.status.valid;
+  }
+
   async validateCurrentLicense() {
     const code = (this.settings.licenseCode || "").trim();
     if (!code) {
@@ -1552,6 +1556,15 @@ class CrispMindCanvas {
   }
 
   toggleCollapse(id = this.selectedNodeId) {
+    if (this.options.readOnly) {
+      const node = this.findNode(id);
+      if (!node?.children?.length) return false;
+      node.data.collapsed = !node.data.collapsed;
+      this.setSelectionState([node.id], node.id);
+      this.render();
+      this.options.onSelectionChange?.(this.selectedNodes());
+      return true;
+    }
     return this.transact(() => {
       const n = this.findNode(id); if (!n?.children?.length) return false;
       n.data.collapsed = !n.data.collapsed; this.setSelectionState([n.id], n.id);
@@ -2852,6 +2865,7 @@ class CrispMindEditView extends TextFileView {
     this.plugin = plugin;
     this.mindDoc = null;
     this.canvasController = null;
+    this.baseReadOnly = false;
   }
 
   getViewType() {
@@ -2864,6 +2878,10 @@ class CrispMindEditView extends TextFileView {
 
   getIcon() {
     return CRISP_MIND_ICON_ID;
+  }
+
+  isLicensed() {
+    return typeof this.plugin?.isLicensed === "function" ? this.plugin.isLicensed() : true;
   }
 
   getViewData() {
@@ -2881,9 +2899,9 @@ class CrispMindEditView extends TextFileView {
     if (!clear && this.dirty && data === this.originalData) return;
     this.originalData = data;
     this.dirty = false;
-    this.readOnly = !this.file?.path?.endsWith(".mind.md") && !this.file?.path?.endsWith(".mind");
-    this.sourceWarning = this.readOnly ? null : inspectMindSource(data);
-    if (this.sourceWarning) this.readOnly = true;
+    this.baseReadOnly = !this.file?.path?.endsWith(".mind.md") && !this.file?.path?.endsWith(".mind");
+    this.sourceWarning = this.baseReadOnly ? null : inspectMindSource(data);
+    this.readOnly = this.baseReadOnly || !this.isLicensed() || !!this.sourceWarning;
     this.saveError = null;
     // Only drop content to empty document if JSON itself is corrupt/unsafe.
     // For non-destructive warnings (like outline mismatch or extra body), keep parsed mindDoc visible in read-only mode.
@@ -3010,6 +3028,35 @@ class CrispMindEditView extends TextFileView {
     await super.onClose();
   }
 
+  openLicenseSettings() {
+    this.plugin.openLicenseSettings();
+  }
+
+  requireLicense(feature) {
+    return this.plugin.requireLicense(feature);
+  }
+
+  refreshLicenseAccess() {
+    const nextReadOnly = this.baseReadOnly || !!this.sourceWarning || !this.isLicensed();
+    if (nextReadOnly === this.readOnly) {
+      this.renderToolbar?.();
+      return;
+    }
+    const wasDirty = this.dirty;
+    this.readOnly = nextReadOnly;
+    if (this.canvasController) {
+      this.canvasController.destroy();
+      this.canvasController = null;
+    }
+    this.initViewUI();
+    if (this.readOnly && wasDirty) this.setSaveState("未激活 · 有未保存修改", true);
+    else if (!this.readOnly && wasDirty) {
+      this.setSaveState("待保存");
+      this.requestSave();
+    }
+    new Notice(this.readOnly ? "Crisp Mind 未激活，已切换为只读预览。" : "Crisp Mind 授权已生效，编辑功能已解锁。");
+  }
+
   initViewUI() {
     this.contentEl.innerHTML = "";
     this.contentEl.style.padding = "0";
@@ -3124,8 +3171,16 @@ class CrispMindEditView extends TextFileView {
     this.renderToolbar();
     this.saveStatusEl = container.createDiv({cls:"crisp-mind-save-status"});
     this.saveStatusEl.setAttribute("role", "status");
-    this.setSaveState(this.sourceWarning || (this.readOnly ? "只读大纲预览" : "已保存"), !!this.sourceWarning);
-    if (this.readOnly) {
+    const licensed = this.isLicensed();
+    this.setSaveState(
+      this.sourceWarning || (this.readOnly ? (licensed ? "只读大纲预览" : "未激活 · 只读预览") : "已保存"),
+      !!this.sourceWarning
+    );
+    if (!licensed && !this.sourceWarning) {
+      const banner = container.createDiv({ cls: "crisp-mind-license-banner" });
+      banner.createSpan({ text: "Crisp Mind 未激活 · 当前为只读预览" });
+      banner.createEl("button", { text: "打开授权设置" }).addEventListener("click", () => this.openLicenseSettings());
+    } else if (this.readOnly) {
       const hint = container.createDiv({cls: "crisp-mind-hint"});
       hint.textContent = "大纲预览 · 原笔记保持不变";
     }
@@ -3428,6 +3483,7 @@ class CrispMindEditView extends TextFileView {
   }
 
   promptBoundary(node, existing = null) {
+    if (!this.requireLicense("边界编辑")) return;
     new CrispMindPromptModal(this.app, {
       title: existing ? "编辑边界" : "添加边界",
       value: existing?.label || "",
@@ -3437,6 +3493,7 @@ class CrispMindEditView extends TextFileView {
   }
 
   promptSummary(node, existing = null) {
+    if (!this.requireLicense("概要编辑")) return;
     new CrispMindPromptModal(this.app, {
       title: existing ? "编辑概要" : "添加概要",
       value: existing?.label || "",
@@ -3446,6 +3503,7 @@ class CrispMindEditView extends TextFileView {
   }
 
   promptRelation(nodes) {
+    if (!this.requireLicense("关系编辑")) return;
     const from = nodes[0], to = nodes[1];
     const existing = (this.canvasController.docData.relations || []).find(relation =>
       (relation.from === from.id && relation.to === to.id) || (relation.from === to.id && relation.to === from.id)
@@ -3459,6 +3517,7 @@ class CrispMindEditView extends TextFileView {
   }
 
   showRelationMenu(relation, event) {
+    if (!this.requireLicense("关系编辑")) return;
     const menu = new Menu();
     menu.addItem(item => item.setTitle("编辑关系标签").setIcon("pencil").onClick(() => {
       new CrispMindPromptModal(this.app, {
@@ -3473,6 +3532,7 @@ class CrispMindEditView extends TextFileView {
   }
 
   showSummaryMenu(summary, event) {
+    if (!this.requireLicense("概要编辑")) return;
     const node = this.canvasController.findNode(summary.nodeId);
     const menu = new Menu();
     menu.addItem(item => item.setTitle("编辑概要标签").setIcon("pencil").onClick(() => node && this.promptSummary(node, summary)));
@@ -3540,6 +3600,7 @@ class CrispMindEditView extends TextFileView {
     }
     // Layout Switcher
     this.createToolbarButton("layout-grid", "切换布局（切换后可点击适应画布）", (e) => {
+      if (!this.requireLicense("布局切换") || this.readOnly) return;
       const menu = new Menu();
       menu.addItem((i) => i.setTitle("逻辑结构图 (从左向右)").onClick(() => this.canvasController.setLayout("logicalStructure")));
       menu.addItem((i) => i.setTitle("经典思维导图 (双向发散)").onClick(() => this.canvasController.setLayout("mindMap")));
@@ -3552,6 +3613,7 @@ class CrispMindEditView extends TextFileView {
 
     // Theme Switcher
     this.createToolbarButton("palette", "切换 Crisp 质感调色盘", (e) => {
+      if (!this.requireLicense("主题切换") || this.readOnly) return;
       const menu = new Menu();
       menu.addItem((i) => i.setTitle("Crisp Obsidian (系统自适应)").onClick(() => this.canvasController.setTheme("crisp-obsidian")));
       menu.addItem((i) => i.setTitle("Crisp Cupertino (经典灰蓝)").onClick(() => this.canvasController.setTheme("crisp-cupertino")));
@@ -3570,6 +3632,7 @@ class CrispMindEditView extends TextFileView {
     });
 
     this.createToolbarButton("presentation", "导图演示模式", () => {
+      if (!this.requireLicense("演示模式")) return;
       if (this.canvasController.presentationActive) this.canvasController.stopPresentation();
       new CrispMindPresentationModal(this.app, this).open();
     });
@@ -3584,6 +3647,7 @@ class CrispMindEditView extends TextFileView {
     });
 
     this.createToolbarButton("panel-right", "节点样式与备注", () => {
+      if (!this.requireLicense("节点样式与备注")) return;
       if (this.inspectorOpen) this.closeInspector();
       else this.openInspector();
     });
@@ -3595,7 +3659,10 @@ class CrispMindEditView extends TextFileView {
       this.extractCurrentNodeToTopic();
     });
 
-    this.createToolbarButton("history", "快照与恢复", () => { void this.showRecovery(); });
+    this.createToolbarButton("history", "快照与恢复", () => {
+      if (!this.requireLicense("快照与恢复")) return;
+      void this.showRecovery();
+    });
     if (!this.readOnly) this.createToolbarButton("save", "保存 / 冲突处理", (e) => {
       const menu = new Menu();
       menu.addItem(i => i.setTitle("立即保存 / 重试").onClick(() => { void this.save(); }));
@@ -3604,6 +3671,7 @@ class CrispMindEditView extends TextFileView {
     });
     // Export Modal Trigger
     this.createToolbarButton("download", "导出思维导图 (PNG / PDF / SVG)", () => {
+      if (!this.requireLicense("导出思维导图")) return;
       new CrispMindExportModal(this.app, this).open();
     });
 
@@ -4461,7 +4529,7 @@ class CrispMindPlugin extends Plugin {
     }
 
     if (this.settings.licenseCode) {
-      void this.licenseManager.validateCurrentLicense();
+      void this.licenseManager.validateCurrentLicense().then(() => this.refreshLicenseViews());
     }
 
     try {
@@ -4537,7 +4605,31 @@ class CrispMindPlugin extends Plugin {
     this.addSettingTab(new CrispMindSettingTab(this.app, this));
   }
 
+  isLicensed() {
+    return !!this.licenseManager?.isLicensed?.();
+  }
+
+  openLicenseSettings() {
+    const setting = this.app.setting;
+    setting?.open?.();
+    setting?.openTabById?.(this.manifest.id);
+  }
+
+  requireLicense(feature = "此功能") {
+    if (this.isLicensed()) return true;
+    new Notice(`🔒 ${feature}需要激活 Crisp Mind，已为你打开授权设置。`);
+    this.openLicenseSettings();
+    return false;
+  }
+
+  refreshLicenseViews() {
+    this.app.workspace.getLeavesOfType(VIEW_TYPE_CRISP_MIND).forEach(leaf => {
+      leaf.view?.refreshLicenseAccess?.();
+    });
+  }
+
   async createNewMindMap(folderPath = "") {
+    if (!this.requireLicense("新建思维导图")) return;
     const fileName = `未命名思维导图 ${new Date().toISOString().slice(0, 10)}.mind.md`;
     const basePath = folderPath ? `${folderPath}/${fileName}` : fileName;
     let fullPath = basePath, suffix = 2;
@@ -4800,6 +4892,7 @@ class CrispMindSettingTab extends PluginSettingTab {
             this.plugin.licenseManager?.clear();
             this.licenseDraft = "";
             await this.plugin.saveSettings();
+            this.plugin.refreshLicenseViews();
             new Notice("Crisp Mind: 已清除当前授权码");
             this.display();
           })
@@ -4835,6 +4928,7 @@ class CrispMindSettingTab extends PluginSettingTab {
               const res = await this.plugin.licenseManager?.activate(codeToVerify);
               await this.plugin.saveSettings();
               if (res && res.valid) {
+                this.plugin.refreshLicenseViews();
                 new Notice(`🎉 Crisp Mind 激活成功！欢迎使用，${res.payload?.userName || "Crisp 用户"}`);
               } else {
                 new Notice(`❌ 激活未通过: ${res?.reason || "未知原因"}`);
