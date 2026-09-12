@@ -72,7 +72,7 @@ function setupTestContext(publicKeyPem) {
       if (mod === "util") return require("util");
       if (mod === "fs") return require("fs");
       if (mod === "path") return require("path");
-      return { Plugin, ItemView, TextFileView, Setting, PluginSettingTab, Notice, Modal, TFile, addIcon: () => {} };
+      return { Plugin, ItemView, TextFileView, Setting, PluginSettingTab, Notice, Modal, TFile, addIcon: () => {}, setIcon: () => {} };
     },
     URL,
     module: { exports: {} },
@@ -1070,4 +1070,83 @@ test('viewport transform keeps active editor aligned with its node',()=>{
   assert.equal(canvas.editor.style.left,`${n._x*1.25+90}px`);
   assert.equal(canvas.editor.style.top,`${n._y*1.25+70}px`);
   assert.equal(canvas.editor.style.height,`${n._h*1.25}px`);
+});
+
+test("presentation reveals collapsed ancestors without changing saved folds", () => {
+  const { canvas, changes } = canvasFixture();
+  const parent = canvas.docData.root.children[0], nested = parent.children[0];
+  parent.data.collapsed = true;
+  canvas.container = { clientWidth: 900, clientHeight: 700 };
+  canvas.setPresentationSteps([{ nodeId: nested.id }]);
+  const before = changes();
+  canvas.startPresentation();
+  assert.ok(canvas.visibleNodes().includes(nested));
+  assert.ok(Number.isFinite(canvas.translateX) && Number.isFinite(canvas.translateY));
+  assert.equal(parent.data.collapsed, true);
+  assert.equal(changes(), before);
+  canvas.stopPresentation();
+  assert.ok(!canvas.visibleNodes().includes(nested));
+});
+
+test("outline navigation reveals a hidden node and leaves unrelated branch focus", () => {
+  const { canvas, changes } = canvasFixture();
+  const [parent, other] = canvas.docData.root.children, nested = parent.children[0];
+  parent.data.collapsed = true;
+  canvas.container = { clientWidth: 900, clientHeight: 700 };
+  canvas.setBranchFocus(other.id);
+  const before = changes();
+  canvas.selectNode(nested.id, true);
+  assert.equal(canvas.branchFocusId, null);
+  assert.ok(canvas.visibleNodes().includes(nested));
+  assert.ok(Number.isFinite(canvas.translateX) && Number.isFinite(canvas.translateY));
+  assert.equal(parent.data.collapsed, true);
+  assert.equal(changes(), before);
+});
+
+test("deleting a selected parent and child selects a surviving ancestor", () => {
+  const { canvas } = canvasFixture();
+  const root = canvas.docData.root, parent = root.children[0], nested = parent.children[0];
+  canvas.setNodeSelection([parent.id, nested.id], nested.id);
+  canvas.deleteSelectedNodes();
+  assert.equal(canvas.selectedNodeId, root.id);
+  canvas.undo();
+  assert.ok(canvas.findNode(nested.id));
+});
+
+test("outline filtering visits every matching sibling branch", () => {
+  const { canvas, helpers } = canvasFixture();
+  canvas.docData.root.children.forEach(n => { n.data.text = "Match " + n.data.text; });
+  const labels = [];
+  const element = () => ({
+    style: { setProperty() {} }, classList: { add() {} },
+    empty() { labels.length = 0; }, setAttribute() {}, addEventListener() {},
+    createDiv() { return element(); }, createEl() { return element(); },
+    createSpan(options) { if (options?.cls === "crisp-mind-outline-text") labels.push(options.text); return element(); }
+  });
+  const view = Object.create(helpers.CrispMindEditView.prototype);
+  Object.assign(view, { canvasController: canvas, outlinePanelEl: element(), outlineTreeEl: element(), outlineFilterEl: { value: "Match" } });
+  view.renderOutline();
+  assert.deepEqual(labels, ["Root", "Match One", "Match Two", "Match Three"]);
+});
+
+
+test("deleting a selected ancestor also skips unselected parents of the primary node", () => {
+  const { canvas } = canvasFixture();
+  const root = canvas.docData.root, parent = root.children[0], middle = parent.children[0];
+  middle.children = [{ id: "deep-node", data: { text: "Deep" }, children: [] }];
+  canvas.setNodeSelection([parent.id, "deep-node"], "deep-node");
+  canvas.deleteSelectedNodes();
+  assert.equal(canvas.selectedNodeId, root.id);
+});
+
+test("a temporarily revealed branch can be collapsed with one toggle", () => {
+  const { canvas } = canvasFixture();
+  const parent = canvas.docData.root.children[0], nested = parent.children[0];
+  parent.data.collapsed = true;
+  canvas.selectNode(nested.id, true);
+  canvas.toggleCollapse(parent.id);
+  assert.ok(!canvas.visibleNodes().includes(nested));
+  assert.equal(parent.data.collapsed, true);
+  canvas.toggleCollapse(parent.id);
+  assert.ok(canvas.visibleNodes().includes(nested));
 });

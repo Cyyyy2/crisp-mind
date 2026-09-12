@@ -947,6 +947,8 @@ class CrispMindCanvas {
     this.history = [];
     this.historyIndex = -1;
     this.branchFocusId = null;
+    this.revealedAncestorIds = new Set();
+    this.presentationAncestorIds = new Set();
     this.presentationActive = false;
     this.presentationIndex = 0;
 
@@ -956,6 +958,17 @@ class CrispMindCanvas {
 
   layoutRoot() {
     return (this.branchFocusId && this.findNode(this.branchFocusId)) || this.docData.root;
+  }
+
+  ancestorIds(id) {
+    const ids = new Set();
+    for (let parent = this.findParent(id); parent; parent = this.findParent(parent.id)) ids.add(parent.id);
+    return ids;
+  }
+
+  isNodeExpanded(node) {
+    return !node.data?.collapsed || node.id === this.branchFocusId ||
+      this.revealedAncestorIds.has(node.id) || this.presentationAncestorIds.has(node.id);
   }
 
   getPresentationSteps() {
@@ -1007,6 +1020,11 @@ class CrispMindCanvas {
 
   selectNode(id, reveal = false, options = {}) {
     const node = this.findNode(id); if (!node) return;
+    if (reveal) {
+      const ancestors = this.ancestorIds(id);
+      if (this.branchFocusId && this.branchFocusId !== id && !ancestors.has(this.branchFocusId)) this.clearBranchFocus();
+      this.revealedAncestorIds = ancestors;
+    }
     if (options.additive) {
       if (this.selectedNodeIds.has(id)) this.selectedNodeIds.delete(id);
       else this.selectedNodeIds.add(id);
@@ -1181,6 +1199,7 @@ class CrispMindCanvas {
     const node = this.findNode(id);
     if (!node) return false;
     this.stopPresentation();
+    this.revealedAncestorIds.clear();
     this.branchFocusId = node.id;
     this.setSelectionState([node.id], node.id);
     this.render();
@@ -1246,6 +1265,7 @@ class CrispMindCanvas {
     const node = this.findNode(steps[this.presentationIndex].nodeId);
     if (!node) return false;
     this.presentationActive = true;
+    this.presentationAncestorIds = this.ancestorIds(node.id);
     this.setSelectionState([node.id], node.id);
     this.render();
     this.centerOnNode(node.id, Math.max(0.72, Math.min(1.2, this.scale)));
@@ -1256,6 +1276,7 @@ class CrispMindCanvas {
   stopPresentation(notify = true) {
     if (!this.presentationActive) return;
     this.presentationActive = false;
+    this.presentationAncestorIds.clear();
     this.render();
     if (notify) this.options.onPresentationChange?.({ active: false, index: this.presentationIndex, total: this.getPresentationSteps().length });
   }
@@ -1517,14 +1538,17 @@ class CrispMindCanvas {
     });
     const changed = this.transact(() => {
       const removedIds = new Set();
-      const primaryParent = this.findParent(this.selectedNodeId) || this.docData.root;
+      let primaryParent = this.findParent(this.selectedNodeId) || this.docData.root;
       const collect = node => {
         if (!node) return;
         removedIds.add(node.id);
         (node.children || []).forEach(collect);
       };
+      topLevel.forEach(collect);
+      while (removedIds.has(primaryParent.id)) {
+        primaryParent = this.findParent(primaryParent.id) || this.docData.root;
+      }
       for (const node of topLevel) {
-        collect(node);
         const parent = this.findParent(node.id);
         if (parent) parent.children = parent.children.filter(child => child.id !== node.id);
       }
@@ -1550,12 +1574,21 @@ class CrispMindCanvas {
     const list = [];
     const walk = n => {
       list.push(n);
-      if (!n.data.collapsed || n.id === this.branchFocusId) (n.children || []).forEach(walk);
+      if (this.isNodeExpanded(n)) (n.children || []).forEach(walk);
     };
     if (root) walk(root); return list;
   }
 
   toggleCollapse(id = this.selectedNodeId) {
+    if (this.editor || this.presentationActive) return false;
+    const revealed = this.findNode(id);
+    if (revealed?.data.collapsed && this.revealedAncestorIds.has(id)) {
+      this.revealedAncestorIds.delete(id);
+      this.setSelectionState([id], id);
+      this.render();
+      this.options.onSelectionChange?.(this.selectedNodes());
+      return true;
+    }
     if (this.options.readOnly) {
       const node = this.findNode(id);
       if (!node?.children?.length) return false;
@@ -1655,7 +1688,7 @@ class CrispMindCanvas {
     const V_GAP = 20;
 
     const root = this.layoutRoot();
-    const children = n => (n.data.collapsed && n.id !== this.branchFocusId) ? [] : (n.children || []);
+    const children = n => this.isNodeExpanded(n) ? (n.children || []) : [];
     const font = this.window?.getComputedStyle && this.container?.ownerDocument ? this.window.getComputedStyle(this.container).fontFamily : "sans-serif";
     if (this.document?.createElement && !this.measureContext) {
       try { this.measureContext = this.document.createElement("canvas").getContext("2d"); } catch (_) {}
@@ -1927,7 +1960,7 @@ class CrispMindCanvas {
     const currentPresentationNodeId = this._currentPresentationNodeId;
 
     // Connecting lines
-    if ((!node.data.collapsed || node.id === this.branchFocusId) && node.children && node.children.length > 0) {
+    if (this.isNodeExpanded(node) && node.children && node.children.length > 0) {
       node.children.forEach((child) => {
         const line = this.document.createElementNS("http://www.w3.org/2000/svg", "path");
         const leftward = child._x < node._x;
@@ -1996,7 +2029,7 @@ class CrispMindCanvas {
     const isCompleted = /^\[[xX]\]\s/.test(rawText);
     const nodeStyle = normalizeNodeStyle(node.data?.style) || {};
 
-    const signature = JSON.stringify([node.data, node._w, node._h, node._lines, isSelected, isPrimarySelected, isRoot, this.theme, node.children?.length, isCompleted]);
+    const signature = JSON.stringify([node.data, node._w, node._h, node._lines, isSelected, isPrimarySelected, isRoot, this.theme, node.children?.length, isCompleted, this.isNodeExpanded(node)]);
     this.seenNodes = this.seenNodes || new Set();
     this.seenNodes.add(node.id);
     const cached = this.nodeElements ? this.nodeElements.get(node.id) : null;
@@ -2162,7 +2195,7 @@ class CrispMindCanvas {
     if (node.children?.length) {
       const fold = this.document.createElementNS("http://www.w3.org/2000/svg", "g");
       fold.setAttribute("data-collapse", node.id); fold.setAttribute("class", "crisp-mind-collapse");
-      fold.setAttribute("role", "button"); fold.setAttribute("aria-label", node.data.collapsed ? `展开 ${node.children.length} 个子主题` : "折叠分支");
+      fold.setAttribute("role", "button"); fold.setAttribute("aria-label", !this.isNodeExpanded(node) ? `展开 ${node.children.length} 个子主题` : "折叠分支");
 
       let foldX = node._w + 13, foldY = node._h / 2;
       if (this.layout === "organizationStructure") {
@@ -2180,7 +2213,7 @@ class CrispMindCanvas {
       circle.setAttribute("fill", this.theme.nodeBackground); circle.setAttribute("stroke", this.theme.borderColor); fold.appendChild(circle);
       const label = this.document.createElementNS("http://www.w3.org/2000/svg", "text");
       label.setAttribute("x", foldX); label.setAttribute("y", foldY); label.setAttribute("text-anchor", "middle"); label.setAttribute("dominant-baseline", "central"); label.setAttribute("font-size", "11"); label.setAttribute("fill", this.theme.textColor);
-      label.textContent = node.data.collapsed && node.id !== this.branchFocusId ? String(node.children.length) : "−"; fold.appendChild(label);
+      label.textContent = !this.isNodeExpanded(node) ? String(node.children.length) : "−"; fold.appendChild(label);
       fold.addEventListener("click", e => { e.stopPropagation(); this.toggleCollapse(g._mindNode.id); });
       g.appendChild(fold);
     }
@@ -3250,7 +3283,9 @@ class CrispMindEditView extends TextFileView {
     if (query) {
       const markMatches = node => {
         const ownMatch = displayName(node).normalize("NFKC").toLocaleLowerCase().includes(query);
-        const childMatch = (node.children || []).some(markMatches);
+        // Visit all siblings; short-circuiting here drops later matching branches.
+        let childMatch = false;
+        for (const child of node.children || []) if (markMatches(child)) childMatch = true;
         if (ownMatch || childMatch) matched.add(node.id);
         return ownMatch || childMatch;
       };
@@ -3266,9 +3301,9 @@ class CrispMindEditView extends TextFileView {
         cls: `crisp-mind-outline-row${selected.has(node.id) ? " is-selected" : ""}${node.id === controller.selectedNodeId ? " is-primary" : ""}${isLast ? " is-last" : ""}${isRoot ? " is-root" : ""}`
       });
       row.style.setProperty("--outline-depth", String(depth));
-      const toggle = row.createEl("button", { cls: "crisp-mind-outline-toggle", attr: { "aria-label": node.data?.collapsed ? "展开" : "折叠" } });
+      const toggle = row.createEl("button", { cls: "crisp-mind-outline-toggle", attr: { "aria-label": !controller.isNodeExpanded(node) ? "展开" : "折叠" } });
       if (node.children?.length) {
-        setIcon(toggle, node.data?.collapsed ? "chevron-right" : "chevron-down");
+        setIcon(toggle, !controller.isNodeExpanded(node) ? "chevron-right" : "chevron-down");
         toggle.addEventListener("click", event => {
           event.stopPropagation();
           controller.toggleCollapse(node.id);
@@ -3289,7 +3324,7 @@ class CrispMindEditView extends TextFileView {
         if (event.shiftKey && controller.selectionAnchorId) controller.selectVisibleRange(controller.selectionAnchorId, node.id);
         else controller.selectNode(node.id, true, { additive: event.metaKey || event.ctrlKey });
       });
-      if (node.data?.collapsed && !query) return;
+      if (!controller.isNodeExpanded(node) && !query) return;
       if (!query && level >= depthLimit) return;
       const children = node.children || [];
       children.forEach((child, index) => {
@@ -3929,7 +3964,7 @@ class CrispMindExporter {
         maxX = Math.max(maxX, node._x + (node._w || 120));
         maxY = Math.max(maxY, node._y + (node._h || 40));
       }
-      if ((!node.data?.collapsed || node.id === this.controller?.branchFocusId) && node.children) {
+      if ((this.controller?.isNodeExpanded?.(node) ?? !node.data?.collapsed) && node.children) {
         node.children.forEach(walk);
       }
     };
