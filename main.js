@@ -66,7 +66,7 @@ const CRISP_LICENSE_PRODUCTS = [
 
 const DEFAULT_SETTINGS = {
   defaultLayout: "logicalStructure", // logicalStructure | mindMap | organizationStructure | catalogOrganization | timeline | fishbone
-  defaultTheme: "crisp-obsidian",     // crisp-obsidian | crisp-cupertino | crisp-nord | crisp-mono | crisp-amber
+  defaultTheme: "crisp-obsidian",     // crisp-obsidian | crisp-cupertino | crisp-nord | crisp-mono | crisp-amber | crisp-paper
   toolbarPosition: "bottom",         // bottom | top
   enablePulseSync: true,
   enableFocusZen: true,
@@ -447,6 +447,15 @@ function validateAndRepairTree(docData) {
     if (typeof node.data.text !== "string" || !node.data.text.trim()) {
       node.data.text = isRoot ? "Central Topic" : "Topic";
     }
+    if (typeof node.data.note === "string") {
+      node.data.note = node.data.note.slice(0, 5000);
+      if (!node.data.note.trim()) delete node.data.note;
+    } else if (node.data.note != null) {
+      delete node.data.note;
+    }
+    const normalizedStyle = normalizeNodeStyle(node.data.style);
+    if (normalizedStyle) node.data.style = normalizedStyle;
+    else delete node.data.style;
     if (!Array.isArray(node.children)) {
       node.children = [];
     } else {
@@ -458,9 +467,148 @@ function validateAndRepairTree(docData) {
   }
 
   docData.root = repairNode(docData.root, true);
+  if (!docData.version || docData.version === "1.0") docData.version = "1.1";
   if (!docData.layout) docData.layout = "logicalStructure";
   if (!docData.theme) docData.theme = "crisp-obsidian";
+  const presentationSteps = normalizePresentationSteps(docData.presentation?.steps, docData.root);
+  if (presentationSteps.length) docData.presentation = { steps: presentationSteps };
+  else delete docData.presentation;
+  normalizeMindAnnotations(docData);
   return docData;
+}
+
+function searchMindNodes(rootNode, query, vaultName) {
+  const needle = String(query || "").normalize("NFKC").trim().toLocaleLowerCase();
+  if (!needle || !rootNode) return [];
+  const results = [];
+  const walk = (node, path) => {
+    if (!node || results.length >= 100) return;
+    const raw = String(node.data?.text || "");
+    const display = mindNodeLink(raw, vaultName)?.display || raw;
+    const nextPath = [...path, display];
+    const haystack = `${raw}\n${display}`.normalize("NFKC").toLocaleLowerCase();
+    if (haystack.includes(needle)) {
+      results.push({
+        id: node.id,
+        text: display,
+        rawText: raw,
+        path: nextPath,
+        depth: nextPath.length - 1,
+        startsWith: display.normalize("NFKC").toLocaleLowerCase().startsWith(needle)
+      });
+    }
+    (node.children || []).forEach(child => walk(child, nextPath));
+  };
+  walk(rootNode, []);
+  return results;
+}
+
+function normalizePresentationSteps(steps, rootNode) {
+  if (!Array.isArray(steps) || !rootNode) return [];
+  const validIds = new Set();
+  const collect = node => {
+    if (!node || typeof node.id !== "string" || !node.id) return;
+    validIds.add(node.id);
+    (node.children || []).forEach(collect);
+  };
+  collect(rootNode);
+
+  const normalized = [];
+  const seen = new Set();
+  for (const rawStep of steps.slice(0, 500)) {
+    if (!rawStep || typeof rawStep !== "object") continue;
+    const nodeId = typeof rawStep.nodeId === "string" ? rawStep.nodeId.trim() : "";
+    if (!nodeId || seen.has(nodeId) || !validIds.has(nodeId)) continue;
+    const note = typeof rawStep.note === "string" ? rawStep.note.slice(0, 5000) : "";
+    normalized.push({ nodeId, note });
+    seen.add(nodeId);
+  }
+  return normalized;
+}
+
+const MIND_NODE_SHAPES = new Set(["rounded", "rectangle", "pill", "ellipse"]);
+const MIND_TEXT_ALIGNS = new Set(["left", "center", "right"]);
+
+function normalizeMindColor(value) {
+  return typeof value === "string" && /^#[0-9a-f]{6}$/i.test(value.trim())
+    ? value.trim().toLowerCase()
+    : "";
+}
+
+function normalizeNodeStyle(style) {
+  if (!style || typeof style !== "object" || Array.isArray(style)) return null;
+  const normalized = {};
+  if (MIND_NODE_SHAPES.has(style.shape)) normalized.shape = style.shape;
+  for (const key of ["fill", "textColor", "borderColor"]) {
+    const color = normalizeMindColor(style[key]);
+    if (color) normalized[key] = color;
+  }
+  if (Number.isFinite(style.borderWidth)) {
+    normalized.borderWidth = Math.max(0, Math.min(8, Math.round(style.borderWidth)));
+  }
+  if (Number.isFinite(style.fontSize)) {
+    normalized.fontSize = Math.max(10, Math.min(28, Math.round(style.fontSize)));
+  }
+  if ([400, 500, 600, 700].includes(style.fontWeight)) normalized.fontWeight = style.fontWeight;
+  if (MIND_TEXT_ALIGNS.has(style.align)) normalized.align = style.align;
+  return Object.keys(normalized).length ? normalized : null;
+}
+
+function normalizeMindAnnotations(docData) {
+  const validIds = new Set();
+  const collect = node => {
+    if (!node || typeof node.id !== "string" || !node.id) return;
+    validIds.add(node.id);
+    (node.children || []).forEach(collect);
+  };
+  collect(docData.root);
+
+  const relationKeys = new Set();
+  const relationIds = new Set();
+  const relations = [];
+  for (const raw of Array.isArray(docData.relations) ? docData.relations.slice(0, 1000) : []) {
+    if (!raw || typeof raw !== "object") continue;
+    const from = typeof raw.from === "string" ? raw.from : "";
+    const to = typeof raw.to === "string" ? raw.to : "";
+    const pair = [from, to].sort().join("\u0000");
+    if (!validIds.has(from) || !validIds.has(to) || from === to || relationKeys.has(pair)) continue;
+    const id = typeof raw.id === "string" && raw.id ? raw.id : `relation-${generateUid()}`;
+    if (relationIds.has(id)) continue;
+    relations.push({
+      id,
+      from,
+      to,
+      label: typeof raw.label === "string" ? raw.label.slice(0, 200) : "",
+      color: normalizeMindColor(raw.color)
+    });
+    relationIds.add(id);
+    relationKeys.add(pair);
+  }
+  if (relations.length) docData.relations = relations;
+  else delete docData.relations;
+
+  for (const kind of ["boundaries", "summaries"]) {
+    const seenNodes = new Set();
+    const seenIds = new Set();
+    const normalized = [];
+    for (const raw of Array.isArray(docData[kind]) ? docData[kind].slice(0, 500) : []) {
+      if (!raw || typeof raw !== "object") continue;
+      const nodeId = typeof raw.nodeId === "string" ? raw.nodeId : "";
+      if (!validIds.has(nodeId) || seenNodes.has(nodeId)) continue;
+      const id = typeof raw.id === "string" && raw.id ? raw.id : `${kind.slice(0, -1)}-${generateUid()}`;
+      if (seenIds.has(id)) continue;
+      normalized.push({
+        id,
+        nodeId,
+        label: typeof raw.label === "string" ? raw.label.slice(0, 200) : "",
+        color: normalizeMindColor(raw.color)
+      });
+      seenNodes.add(nodeId);
+      seenIds.add(id);
+    }
+    if (normalized.length) docData[kind] = normalized;
+    else delete docData[kind];
+  }
 }
 
 function parseMindMarkdown(rawText) {
@@ -469,7 +617,7 @@ function parseMindMarkdown(rawText) {
     return {
       title: "Central Topic",
       frontmatter: "crisp-mind: true\n",
-      data: { version: "1.0", layout: "logicalStructure", theme: "crisp-obsidian", root: defaultRoot }
+      data: { version: "1.1", layout: "logicalStructure", theme: "crisp-obsidian", root: defaultRoot }
     };
   }
 
@@ -508,7 +656,7 @@ function parseMindMarkdown(rawText) {
     title: tree.data.text,
     frontmatter: frontmatter || "crisp-mind: true\n",
     data: {
-      version: "1.0",
+      version: "1.1",
       layout: "logicalStructure",
       theme: "crisp-obsidian",
       root: tree
@@ -697,6 +845,30 @@ function getComputedThemeConfig(themeName = "crisp-obsidian") {
     };
   }
 
+  if (themeName === "crisp-paper") {
+    return {
+      name: "crisp-paper",
+      backgroundColor: isDark ? "#20211f" : "#f6f1e8",
+      nodeBackground: isDark ? "#2a2b28" : "#fffdf8",
+      accentColor: isDark ? "#d58a61" : "#a65437",
+      textColor: isDark ? "#ece7de" : "#302b25",
+      textMuted: isDark ? "#aaa095" : "#756a5f",
+      borderColor: isDark ? "#474640" : "#ded3c3",
+      lineColor: isDark ? "#8e7868" : "#b5a58f",
+      activeBorderColor: isDark ? "#e8a47f" : "#8f4a31",
+      borderRadius: 5,
+      fontFamily: '"Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif',
+      paperPattern: true,
+      patternColor: isDark ? "rgba(255,255,255,0.055)" : "rgba(83,68,49,0.10)",
+      nodeShadow: isDark
+        ? "drop-shadow(0 2px 5px rgba(0, 0, 0, 0.24))"
+        : "drop-shadow(0 2px 4px rgba(74, 57, 37, 0.10))",
+      rootShadow: isDark
+        ? "drop-shadow(0 4px 10px rgba(0, 0, 0, 0.28))"
+        : "drop-shadow(0 4px 10px rgba(142, 74, 49, 0.18))"
+    };
+  }
+
   // Default: crisp-obsidian (Dynamic CSS variable extraction)
   let accent = "#7c3aed";
   let bgPrimary = isDark ? "#1e1e2e" : "#ffffff";
@@ -766,11 +938,322 @@ class CrispMindCanvas {
     this.startY = 0;
 
     this.selectedNodeId = null;
+    this.selectedNodeIds = new Set();
+    this.selectionAnchorId = null;
     this.history = [];
     this.historyIndex = -1;
+    this.branchFocusId = null;
+    this.presentationActive = false;
+    this.presentationIndex = 0;
 
     this.saveState(false);
     this.initCanvas();
+  }
+
+  layoutRoot() {
+    return (this.branchFocusId && this.findNode(this.branchFocusId)) || this.docData.root;
+  }
+
+  getPresentationSteps() {
+    return normalizePresentationSteps(this.docData.presentation?.steps, this.docData.root);
+  }
+
+  nodePath(id) {
+    const path = [];
+    const walk = (node, chain) => {
+      if (!node) return false;
+      const display = mindNodeLink(node.data?.text || "", this.options.vaultName)?.display || node.data?.text || "Topic";
+      const next = [...chain, display];
+      if (node.id === id) {
+        path.push(...next);
+        return true;
+      }
+      return (node.children || []).some(child => walk(child, next));
+    };
+    walk(this.docData.root, []);
+    return path;
+  }
+
+  selectedNodes() {
+    const result = [];
+    const walk = node => {
+      if (!node) return;
+      if (this.selectedNodeIds.has(node.id)) result.push(node);
+      (node.children || []).forEach(walk);
+    };
+    walk(this.docData.root);
+    return result;
+  }
+
+  setSelectionState(ids, primaryId = null) {
+    const valid = new Set();
+    for (const id of ids || []) {
+      if (this.findNode(id)) valid.add(id);
+    }
+    this.selectedNodeIds = valid;
+    this.selectedNodeId = valid.has(primaryId) ? primaryId : [...valid][0] || null;
+    this.selectionAnchorId = this.selectedNodeId;
+  }
+
+  setNodeSelection(ids, primaryId = null, notify = true) {
+    this.setSelectionState(ids, primaryId);
+    this.render();
+    if (notify) this.options.onSelectionChange?.(this.selectedNodes());
+  }
+
+  selectNode(id, reveal = false, options = {}) {
+    const node = this.findNode(id); if (!node) return;
+    if (options.additive) {
+      if (this.selectedNodeIds.has(id)) this.selectedNodeIds.delete(id);
+      else this.selectedNodeIds.add(id);
+      this.selectedNodeId = this.selectedNodeIds.has(id)
+        ? id
+        : [...this.selectedNodeIds][0] || null;
+      this.selectionAnchorId = id;
+    } else {
+      this.selectedNodeIds = new Set([id]);
+      this.selectedNodeId = id;
+      this.selectionAnchorId = id;
+    }
+    this.render();
+    if (reveal) {
+      const x = (node._x + node._w / 2) * this.scale + this.translateX;
+      const y = (node._y + node._h / 2) * this.scale + this.translateY;
+      if (x < 40 || x > this.container.clientWidth - 40 || y < 60 || y > this.container.clientHeight - 100) {
+        this.translateX += this.container.clientWidth / 2 - x;
+        this.translateY += this.container.clientHeight / 2 - y; this.updateTransform();
+      }
+    }
+    this.options.onSelectionChange?.(this.selectedNodes());
+    this.options.onSelectNode?.(node, {x: (node._x + node._w / 2) * this.scale + this.translateX, y: node._y * this.scale + this.translateY});
+  }
+
+  selectVisibleRange(fromId, toId) {
+    const nodes = this.visibleNodes();
+    const from = nodes.findIndex(node => node.id === fromId);
+    const to = nodes.findIndex(node => node.id === toId);
+    if (from < 0 || to < 0) return false;
+    const slice = from <= to ? nodes.slice(from, to + 1) : nodes.slice(to, from + 1);
+    this.setNodeSelection(slice.map(node => node.id), toId);
+    return true;
+  }
+
+  handleNodeClick(node, event) {
+    if (event.shiftKey && this.selectionAnchorId) {
+      this.selectVisibleRange(this.selectionAnchorId, node.id);
+      return;
+    }
+    if (event.metaKey || event.ctrlKey) {
+      this.selectNode(node.id, false, { additive: true });
+      return;
+    }
+    this.selectNode(node.id);
+  }
+
+  updateSelectedNodeStyles(patch = {}) {
+    const nodes = this.selectedNodes();
+    if (!nodes.length) return false;
+    return this.transact(() => {
+      for (const node of nodes) {
+        const current = normalizeNodeStyle(node.data.style) || {};
+        for (const [key, value] of Object.entries(patch)) {
+          if (value == null || value === "") delete current[key];
+          else current[key] = value;
+        }
+        const normalized = normalizeNodeStyle(current);
+        if (normalized) node.data.style = normalized;
+        else delete node.data.style;
+      }
+    });
+  }
+
+  updateSelectedNodeNote(note) {
+    const node = this.selectedNodes()[0];
+    if (!node) return false;
+    const normalized = typeof note === "string" ? note.slice(0, 5000) : "";
+    return this.transact(() => {
+      if (normalized.trim()) node.data.note = normalized;
+      else delete node.data.note;
+    });
+  }
+
+  addRelation(fromId, toId, label = "", color = "") {
+    if (fromId === toId || !this.findNode(fromId) || !this.findNode(toId)) return null;
+    const existing = (this.docData.relations || []).find(relation =>
+      (relation.from === fromId && relation.to === toId) || (relation.from === toId && relation.to === fromId)
+    );
+    if (existing) {
+      this.transact(() => {
+        existing.label = String(label || "").slice(0, 200);
+        const normalizedColor = normalizeMindColor(color);
+        if (normalizedColor) existing.color = normalizedColor;
+        else delete existing.color;
+      });
+      return existing;
+    }
+    const relation = {
+      id: `relation-${generateUid()}`,
+      from: fromId,
+      to: toId,
+      label: String(label || "").slice(0, 200),
+      ...(normalizeMindColor(color) ? { color: normalizeMindColor(color) } : {})
+    };
+    const changed = this.transact(() => {
+      if (!Array.isArray(this.docData.relations)) this.docData.relations = [];
+      this.docData.relations.push(relation);
+    });
+    return changed ? relation : null;
+  }
+
+  removeRelation(id) {
+    return this.transact(() => {
+      if (!Array.isArray(this.docData.relations)) return false;
+      const next = this.docData.relations.filter(relation => relation.id !== id);
+      if (next.length === this.docData.relations.length) return false;
+      if (next.length) this.docData.relations = next;
+      else delete this.docData.relations;
+    });
+  }
+
+  setBoundary(nodeId, label = "", color = "") {
+    if (!this.findNode(nodeId)) return false;
+    return this.transact(() => {
+      if (!Array.isArray(this.docData.boundaries)) this.docData.boundaries = [];
+      const existing = this.docData.boundaries.find(boundary => boundary.nodeId === nodeId);
+      if (existing) {
+        existing.label = String(label || "").slice(0, 200);
+        existing.color = normalizeMindColor(color) || existing.color || "";
+        return;
+      }
+      this.docData.boundaries.push({
+        id: `boundary-${generateUid()}`,
+        nodeId,
+        label: String(label || "").slice(0, 200),
+        color: normalizeMindColor(color)
+      });
+    });
+  }
+
+  removeBoundary(nodeId) {
+    return this.transact(() => {
+      if (!Array.isArray(this.docData.boundaries)) return false;
+      const next = this.docData.boundaries.filter(boundary => boundary.nodeId !== nodeId);
+      if (next.length === this.docData.boundaries.length) return false;
+      if (next.length) this.docData.boundaries = next;
+      else delete this.docData.boundaries;
+    });
+  }
+
+  setSummary(nodeId, label = "", color = "") {
+    if (!this.findNode(nodeId)) return false;
+    return this.transact(() => {
+      if (!Array.isArray(this.docData.summaries)) this.docData.summaries = [];
+      const existing = this.docData.summaries.find(summary => summary.nodeId === nodeId);
+      if (existing) {
+        existing.label = String(label || "").slice(0, 200);
+        existing.color = normalizeMindColor(color) || existing.color || "";
+        return;
+      }
+      this.docData.summaries.push({
+        id: `summary-${generateUid()}`,
+        nodeId,
+        label: String(label || "").slice(0, 200),
+        color: normalizeMindColor(color)
+      });
+    });
+  }
+
+  removeSummary(nodeId) {
+    return this.transact(() => {
+      if (!Array.isArray(this.docData.summaries)) return false;
+      const next = this.docData.summaries.filter(summary => summary.nodeId !== nodeId);
+      if (next.length === this.docData.summaries.length) return false;
+      if (next.length) this.docData.summaries = next;
+      else delete this.docData.summaries;
+    });
+  }
+
+  setBranchFocus(id = this.selectedNodeId) {
+    const node = this.findNode(id);
+    if (!node) return false;
+    this.stopPresentation();
+    this.branchFocusId = node.id;
+    this.setSelectionState([node.id], node.id);
+    this.render();
+    this.resetZoom();
+    this.container.focus?.({ preventScroll: true });
+    this.options.onBranchFocus?.(node, this.nodePath(node.id));
+    this.options.onSelectionChange?.(this.selectedNodes());
+    return true;
+  }
+
+  clearBranchFocus() {
+    if (!this.branchFocusId) return;
+    this.branchFocusId = null;
+    this.render();
+    this.resetZoom();
+    this.options.onBranchFocus?.(null, []);
+  }
+
+  centerOnNode(id, targetScale) {
+    const node = this.findNode(id);
+    if (!node) return false;
+    const width = this.container.clientWidth || 800;
+    const height = this.container.clientHeight || 600;
+    if (Number.isFinite(targetScale)) this.scale = Math.max(0.05, Math.min(2.5, targetScale));
+    this.translateX = width / 2 - (node._x + node._w / 2) * this.scale;
+    this.translateY = height / 2 - (node._y + node._h / 2) * this.scale;
+    this.updateTransform();
+    this.options.onZoom?.(this.scale);
+    return true;
+  }
+
+  setPresentationSteps(steps) {
+    if (this.options.readOnly) return false;
+    const normalized = normalizePresentationSteps(steps, this.docData.root);
+    if (normalized.length) this.docData.presentation = { steps: normalized };
+    else delete this.docData.presentation;
+    const changed = this.saveState();
+    if (this.presentationIndex >= normalized.length) this.presentationIndex = Math.max(0, normalized.length - 1);
+    if (this.presentationActive && !normalized.length) this.stopPresentation(false);
+    this.render();
+    return changed;
+  }
+
+  startPresentation(startIndex = 0) {
+    const steps = this.getPresentationSteps();
+    if (!steps.length) return false;
+    this.clearBranchFocus();
+    this.presentationActive = true;
+    this.presentationIndex = Math.max(0, Math.min(steps.length - 1, startIndex));
+    this.render();
+    this.goToPresentationStep(this.presentationIndex);
+    this.container.focus?.({ preventScroll: true });
+    return true;
+  }
+
+  goToPresentationStep(index) {
+    const steps = this.getPresentationSteps();
+    if (!steps.length) {
+      this.stopPresentation();
+      return false;
+    }
+    this.presentationIndex = Math.max(0, Math.min(steps.length - 1, Number(index) || 0));
+    const node = this.findNode(steps[this.presentationIndex].nodeId);
+    if (!node) return false;
+    this.presentationActive = true;
+    this.setSelectionState([node.id], node.id);
+    this.render();
+    this.centerOnNode(node.id, Math.max(0.72, Math.min(1.2, this.scale)));
+    this.options.onPresentationChange?.({ active: true, index: this.presentationIndex, total: steps.length });
+    return true;
+  }
+
+  stopPresentation(notify = true) {
+    if (!this.presentationActive) return;
+    this.presentationActive = false;
+    this.render();
+    if (notify) this.options.onPresentationChange?.({ active: false, index: this.presentationIndex, total: this.getPresentationSteps().length });
   }
 
   initCanvas() {
@@ -797,10 +1280,16 @@ class CrispMindCanvas {
     this.viewportGroup = this.document.createElementNS("http://www.w3.org/2000/svg", "g");
     this.svg.appendChild(this.viewportGroup);
 
+    this.boundaryGroup = this.document.createElementNS("http://www.w3.org/2000/svg", "g");
     this.linesGroup = this.document.createElementNS("http://www.w3.org/2000/svg", "g");
+    this.relationsGroup = this.document.createElementNS("http://www.w3.org/2000/svg", "g");
     this.nodesGroup = this.document.createElementNS("http://www.w3.org/2000/svg", "g");
+    this.annotationsGroup = this.document.createElementNS("http://www.w3.org/2000/svg", "g");
+    this.viewportGroup.appendChild(this.boundaryGroup);
     this.viewportGroup.appendChild(this.linesGroup);
+    this.viewportGroup.appendChild(this.relationsGroup);
     this.viewportGroup.appendChild(this.nodesGroup);
+    this.viewportGroup.appendChild(this.annotationsGroup);
 
     this.bindEvents();
     this.render();
@@ -843,11 +1332,19 @@ class CrispMindCanvas {
     if (this.options.readOnly) return;
     if (this.historyIndex > 0) {
       this.historyIndex--;
-      Object.assign(this.docData, JSON.parse(JSON.stringify(this.history[this.historyIndex])));
-      if (!this.findNode(this.selectedNodeId)) this.selectedNodeId = this.docData.root.id;
+      this.restoreMindData(this.history[this.historyIndex]);
+      const restoredSelection = this.selectedNodes();
+      const restoredPrimary = restoredSelection.some(node => node.id === this.selectedNodeId)
+        ? this.selectedNodeId
+        : restoredSelection[0]?.id || this.docData.root.id;
+      this.setSelectionState(
+        restoredSelection.length ? restoredSelection.map(node => node.id) : [this.docData.root.id],
+        restoredPrimary
+      );
       this.layout = this.docData.layout;
       this.theme = getComputedThemeConfig(this.docData.theme);
       this.render();
+      this.options.onSelectionChange?.(this.selectedNodes());
       if (typeof this.options.onChange === "function") {
         this.options.onChange(this.docData);
       }
@@ -858,15 +1355,28 @@ class CrispMindCanvas {
     if (this.options.readOnly) return;
     if (this.historyIndex < this.history.length - 1) {
       this.historyIndex++;
-      Object.assign(this.docData, JSON.parse(JSON.stringify(this.history[this.historyIndex])));
-      if (!this.findNode(this.selectedNodeId)) this.selectedNodeId = this.docData.root.id;
+      this.restoreMindData(this.history[this.historyIndex]);
+      const restoredSelection = this.selectedNodes();
+      const restoredPrimary = restoredSelection.some(node => node.id === this.selectedNodeId)
+        ? this.selectedNodeId
+        : restoredSelection[0]?.id || this.docData.root.id;
+      this.setSelectionState(
+        restoredSelection.length ? restoredSelection.map(node => node.id) : [this.docData.root.id],
+        restoredPrimary
+      );
       this.layout = this.docData.layout;
       this.theme = getComputedThemeConfig(this.docData.theme);
       this.render();
+      this.options.onSelectionChange?.(this.selectedNodes());
       if (typeof this.options.onChange === "function") {
         this.options.onChange(this.docData);
       }
     }
+  }
+
+  restoreMindData(state) {
+    for (const key of Object.keys(this.docData)) delete this.docData[key];
+    Object.assign(this.docData, JSON.parse(JSON.stringify(state)));
   }
 
   setTheme(themeName) {
@@ -919,7 +1429,7 @@ class CrispMindCanvas {
     if (!Array.isArray(parent.children)) parent.children = [];
     parent.children.push(newNode);
     parent.data.collapsed = false;
-    this.selectedNodeId = newNode.id;
+    this.setSelectionState([newNode.id], newNode.id);
     this.saveState();
     this.render();
     this.selectNode(newNode.id, true);
@@ -945,7 +1455,7 @@ class CrispMindCanvas {
     };
     parent.children.splice(idx + 1, 0, newNode);
     parent.data.collapsed = false;
-    this.selectedNodeId = newNode.id;
+    this.setSelectionState([newNode.id], newNode.id);
     this.saveState();
     this.render();
     this.selectNode(newNode.id, true);
@@ -960,10 +1470,65 @@ class CrispMindCanvas {
     if (!nodeId || nodeId === this.docData.root.id) return;
     const parent = this.findParent(nodeId);
     if (!parent) return;
+    const removedIds = new Set();
+    const collect = node => {
+      if (!node) return;
+      removedIds.add(node.id);
+      (node.children || []).forEach(collect);
+    };
+    collect(this.findNode(nodeId));
+    this.pruneAnnotations(removedIds);
     parent.children = parent.children.filter((c) => c.id !== nodeId);
-    this.selectedNodeId = parent.id;
+    this.setSelectionState([parent.id], parent.id);
     this.saveState();
     this.render();
+    this.options.onSelectionChange?.(this.selectedNodes());
+  }
+
+  pruneAnnotations(removedIds) {
+    if (!removedIds?.size) return;
+    for (const key of ["relations", "boundaries", "summaries"]) {
+      if (!Array.isArray(this.docData[key])) continue;
+      const next = this.docData[key].filter(item => {
+        if (key === "relations") return !removedIds.has(item.from) && !removedIds.has(item.to);
+        return !removedIds.has(item.nodeId);
+      });
+      if (next.length) this.docData[key] = next;
+      else delete this.docData[key];
+    }
+  }
+
+  deleteSelectedNodes() {
+    if (this.options.readOnly) return false;
+    const selected = this.selectedNodes().filter(node => node.id !== this.docData.root.id);
+    if (!selected.length) return false;
+    const selectedIds = new Set(selected.map(node => node.id));
+    const topLevel = selected.filter(node => {
+      let parent = this.findParent(node.id);
+      while (parent) {
+        if (selectedIds.has(parent.id)) return false;
+        parent = this.findParent(parent.id);
+      }
+      return true;
+    });
+    const changed = this.transact(() => {
+      const removedIds = new Set();
+      const primaryParent = this.findParent(this.selectedNodeId) || this.docData.root;
+      const collect = node => {
+        if (!node) return;
+        removedIds.add(node.id);
+        (node.children || []).forEach(collect);
+      };
+      for (const node of topLevel) {
+        collect(node);
+        const parent = this.findParent(node.id);
+        if (parent) parent.children = parent.children.filter(child => child.id !== node.id);
+      }
+      this.pruneAnnotations(removedIds);
+      this.setSelectionState([primaryParent.id], primaryParent.id);
+    });
+    if (changed) this.options.onSelectionChange?.(this.selectedNodes());
+    return changed;
   }
 
   // All structural edits finish through one history boundary.
@@ -971,22 +1536,25 @@ class CrispMindCanvas {
     if (this.options.readOnly || this.editor) return false;
     const before = cleanMindData(this.docData);
     try { if (change() === false) return false; }
-    catch (error) { Object.assign(this.docData, before); throw error; }
+    catch (error) { this.restoreMindData(before); throw error; }
     const changed = this.saveState();
     if (changed) this.render();
     return !!changed;
   }
 
-  visibleNodes() {
+  visibleNodes(root = this.layoutRoot()) {
     const list = [];
-    const walk = n => { list.push(n); if (!n.data.collapsed) (n.children || []).forEach(walk); };
-    walk(this.docData.root); return list;
+    const walk = n => {
+      list.push(n);
+      if (!n.data.collapsed || n.id === this.branchFocusId) (n.children || []).forEach(walk);
+    };
+    if (root) walk(root); return list;
   }
 
   toggleCollapse(id = this.selectedNodeId) {
     return this.transact(() => {
       const n = this.findNode(id); if (!n?.children?.length) return false;
-      n.data.collapsed = !n.data.collapsed; this.selectedNodeId = n.id;
+      n.data.collapsed = !n.data.collapsed; this.setSelectionState([n.id], n.id);
     });
   }
 
@@ -999,7 +1567,7 @@ class CrispMindCanvas {
       oldParent.children.splice(oldParent.children.indexOf(node), 1);
       const index = placement === "inside" ? parent.children.length : parent.children.indexOf(target) + (placement === "after" ? 1 : 0);
       parent.children.splice(index, 0, node); parent.data.collapsed = false;
-      this.selectedNodeId = node.id;
+      this.setSelectionState([node.id], node.id);
     });
   }
 
@@ -1008,41 +1576,50 @@ class CrispMindCanvas {
     // A readable outline is the clipboard interchange format, not executable HTML.
     const lines = [];
     const walk = (n, depth) => { lines.push("  ".repeat(depth) + "- " + n.data.text.replace(/\r?\n/g, " ")); (n.children || []).forEach(c => walk(c, depth + 1)); };
-    walk(node, 0); return lines.join("\n");
+    walk(node, 0);
+    const text = lines.join("\n");
+    this.clipboardBranchSnapshot = {
+      text,
+      node: JSON.parse(JSON.stringify(node, (key, value) => MIND_GEOMETRY_KEYS.has(key) ? undefined : value))
+    };
+    return text;
+  }
+
+  cloneBranchWithFreshIds(node) {
+    const clone = JSON.parse(JSON.stringify(node, (key, value) => MIND_GEOMETRY_KEYS.has(key) ? undefined : value));
+    const walk = current => {
+      current.id = generateUid();
+      (current.children || []).forEach(walk);
+    };
+    walk(clone);
+    return clone;
   }
 
   pasteBranchText(text, parentId = this.selectedNodeId || this.docData.root.id) {
     if (typeof text !== "string" || !text.trim() || text.length > 100000) return false;
-    const root = {children: []}; const stack = [{node: root, indent: -1}]; let count = 0;
-    for (const line of text.replace(/\r/g, "").split("\n")) {
-      if (!line.trim()) continue;
-      if (++count > 1000) return false;
-      const indent = line.match(/^\s*/)[0].replace(/\t/g, "  ").length;
-      const label = line.trim().replace(/^(?:[-*+] |\d+[.)] |#{1,6} )/, "").trim(); if (!label) continue;
-      const node = {id: generateUid(), data: {text: normalizeMindLinkText(label, this.options.vaultName)}, children: []};
-      while (stack.length > 1 && stack[stack.length - 1].indent >= indent) stack.pop();
-      if (stack.length > 100) return false;
-      stack[stack.length - 1].node.children.push(node); stack.push({node, indent});
-    }
-    return this.transact(() => {
-      const parent = this.findNode(parentId); if (!parent || !root.children.length) return false;
-      parent.children.push(...root.children); parent.data.collapsed = false;
-      this.selectedNodeId = root.children[0].id;
-    });
-  }
-
-  selectNode(id, reveal = false) {
-    const node = this.findNode(id); if (!node) return;
-    this.selectedNodeId = id; this.render();
-    if (reveal) {
-      const x = (node._x + node._w / 2) * this.scale + this.translateX;
-      const y = (node._y + node._h / 2) * this.scale + this.translateY;
-      if (x < 40 || x > this.container.clientWidth - 40 || y < 60 || y > this.container.clientHeight - 100) {
-        this.translateX += this.container.clientWidth / 2 - x;
-        this.translateY += this.container.clientHeight / 2 - y; this.updateTransform();
+    const root = {children: []};
+    if (this.clipboardBranchSnapshot?.text === text) {
+      root.children.push(this.cloneBranchWithFreshIds(this.clipboardBranchSnapshot.node));
+    } else {
+      const stack = [{node: root, indent: -1}]; let count = 0;
+      for (const line of text.replace(/\r/g, "").split("\n")) {
+        if (!line.trim()) continue;
+        if (++count > 1000) return false;
+        const indent = line.match(/^\s*/)[0].replace(/\t/g, "  ").length;
+        const label = line.trim().replace(/^(?:[-*+] |\d+[.)] |#{1,6} )/, "").trim(); if (!label) continue;
+        const node = {id: generateUid(), data: {text: normalizeMindLinkText(label, this.options.vaultName)}, children: []};
+        while (stack.length > 1 && stack[stack.length - 1].indent >= indent) stack.pop();
+        if (stack.length > 100) return false;
+        stack[stack.length - 1].node.children.push(node); stack.push({node, indent});
       }
     }
-    this.options.onSelectNode?.(node, {x: (node._x + node._w / 2) * this.scale + this.translateX, y: node._y * this.scale + this.translateY});
+    const changed = this.transact(() => {
+      const parent = this.findNode(parentId); if (!parent || !root.children.length) return false;
+      parent.children.push(...root.children); parent.data.collapsed = false;
+      this.setSelectionState([root.children[0].id], root.children[0].id);
+    });
+    if (changed) this.options.onSelectionChange?.(this.selectedNodes());
+    return changed;
   }
 
   navigate(key) {
@@ -1064,7 +1641,8 @@ class CrispMindCanvas {
     const H_GAP = 54;
     const V_GAP = 20;
 
-    const children = n => n.data.collapsed ? [] : (n.children || []);
+    const root = this.layoutRoot();
+    const children = n => (n.data.collapsed && n.id !== this.branchFocusId) ? [] : (n.children || []);
     const font = this.window?.getComputedStyle && this.container?.ownerDocument ? this.window.getComputedStyle(this.container).fontFamily : "sans-serif";
     if (this.document?.createElement && !this.measureContext) {
       try { this.measureContext = this.document.createElement("canvas").getContext("2d"); } catch (_) {}
@@ -1082,21 +1660,43 @@ class CrispMindCanvas {
     };
     const measure = (node, isRoot = false) => {
       const text = mindNodeLink(node.data?.text || "", this.options.vaultName)?.display || node.data?.text || "";
+      const nodeStyle = normalizeNodeStyle(node.data?.style) || {};
+      const fontSize = nodeStyle.fontSize || (isRoot ? 14 : 13);
+      const fontWeight = nodeStyle.fontWeight || (isRoot ? 600 : 450);
+      const lineHeight = Math.max(18, Math.round(fontSize * 1.42));
       const lines = [""];
       let width = 0;
       for (const char of text) {
-        const w = widthOf(char, isRoot);
+        const metricKey = `style:${fontSize}:${fontWeight}:${char}`;
+        let w;
+        if (this.measureContext) {
+          const fontSpec = `${fontWeight} ${fontSize}px ${font}`;
+          this.textMetrics = this.textMetrics || new Map();
+          if (this.textMetrics.has(metricKey)) w = this.textMetrics.get(metricKey);
+          else {
+            this.measureContext.font = fontSpec;
+            w = this.measureContext.measureText(char).width;
+            this.textMetrics.set(metricKey, w);
+          }
+        } else {
+          w = /[^\x00-\xff]/.test(char) ? fontSize : fontSize * 0.58;
+        }
         if (width + w > 252 || char === "\n") { lines.push(""); width = 0; }
         if (char !== "\n") { lines[lines.length - 1] += char; width += w; }
       }
       node._lines = lines;
-      node._w = Math.max(isRoot ? 140 : 100, Math.min(284, Math.max(...lines.map(line => widthOf(line, isRoot))) + 32));
-      node._h = Math.max(isRoot ? 48 : 38, lines.length * 20 + 18);
+      const measuredWidth = this.measureContext
+        ? Math.max(...lines.map(line => {
+          this.measureContext.font = `${fontWeight} ${fontSize}px ${font}`;
+          return this.measureContext.measureText(line).width;
+        }))
+        : Math.max(...lines.map(line => [...line].reduce((sum, char) => sum + (/[^\x00-\xff]/.test(char) ? fontSize : fontSize * 0.58), 0)));
+      node._w = Math.max(isRoot ? 140 : 100, Math.min(284, measuredWidth + 32));
+      node._h = Math.max(isRoot ? 48 : 38, lines.length * lineHeight + 18);
       children(node).forEach(c => measure(c));
       node._treeHeight = Math.max(node._h, children(node).reduce((n,c) => n + c._treeHeight, 0) + Math.max(0, children(node).length - 1) * V_GAP);
       node._treeWidth = Math.max(node._w, children(node).reduce((n,c) => n + c._treeWidth, 0) + Math.max(0, children(node).length - 1) * H_GAP);
     };
-    const root = this.docData.root;
     measure(root, true);
     const horizontal = (node, x, top, direction = 1) => {
       node._x = x;
@@ -1244,9 +1844,20 @@ class CrispMindCanvas {
   render() {
     this.calculateLayout();
     this.container.style.backgroundColor = this.theme.backgroundColor;
+    if (this.theme.paperPattern) {
+      this.container.style.setProperty("--crisp-mind-paper-bg", this.theme.backgroundColor);
+    } else {
+      this.container.style.removeProperty("--crisp-mind-paper-bg");
+    }
+    this.container.classList.toggle("crisp-mind-theme-paper", !!this.theme.paperPattern);
+    this.container.classList.toggle("crisp-mind-presentation-active", this.presentationActive);
     this.updateTransform();
 
+    const root = this.layoutRoot();
     this.linesGroup.innerHTML = "";
+    this.boundaryGroup.innerHTML = "";
+    this.relationsGroup.innerHTML = "";
+    this.annotationsGroup.innerHTML = "";
     if (this.layout === "timeline" && this._timelineAxis) {
       const axisPath = this.document.createElementNS("http://www.w3.org/2000/svg", "path");
       axisPath.setAttribute("d", `M ${this._timelineAxis.startX} ${this._timelineAxis.y} H ${this._timelineAxis.endX}`);
@@ -1255,7 +1866,7 @@ class CrispMindCanvas {
       axisPath.setAttribute("stroke-linecap", "round");
       this.linesGroup.appendChild(axisPath);
 
-      for (const milestone of (this.docData.root.children || [])) {
+      for (const milestone of (root?.children || [])) {
         if (milestone._x == null) continue;
         const dot = this.document.createElementNS("http://www.w3.org/2000/svg", "circle");
         dot.setAttribute("cx", milestone._x + milestone._w / 2);
@@ -1285,7 +1896,13 @@ class CrispMindCanvas {
 
     this.nodeElements = this.nodeElements || new Map();
     this.seenNodes = new Set();
-    this.renderBranch(this.docData.root);
+    this._currentPresentationNodeId = this.presentationActive
+      ? this.getPresentationSteps()[this.presentationIndex]?.nodeId || null
+      : null;
+    this.renderBranch(root);
+    this.renderBoundaries();
+    this.renderRelations();
+    this.renderSummaries();
     for (const [id, element] of this.nodeElements) {
       if (!this.seenNodes.has(id)) { element.remove(); this.nodeElements.delete(id); }
     }
@@ -1294,9 +1911,10 @@ class CrispMindCanvas {
 
   renderBranch(node) {
     if (!node) return;
+    const currentPresentationNodeId = this._currentPresentationNodeId;
 
     // Connecting lines
-    if (!node.data.collapsed && node.children && node.children.length > 0) {
+    if ((!node.data.collapsed || node.id === this.branchFocusId) && node.children && node.children.length > 0) {
       node.children.forEach((child) => {
         const line = this.document.createElementNS("http://www.w3.org/2000/svg", "path");
         const leftward = child._x < node._x;
@@ -1348,6 +1966,9 @@ class CrispMindCanvas {
         line.setAttribute("stroke", this.theme.lineColor || "#7c3aed");
         line.setAttribute("stroke-width", "1.5");
         line.setAttribute("stroke-linecap", "round");
+        if (currentPresentationNodeId && node.id !== currentPresentationNodeId && child.id !== currentPresentationNodeId) {
+          line.setAttribute("opacity", "0.16");
+        }
         this.linesGroup.appendChild(line);
 
         this.renderBranch(child);
@@ -1355,12 +1976,14 @@ class CrispMindCanvas {
     }
 
     // Node Box
-    const isSelected = this.selectedNodeId === node.id;
+    const isSelected = this.selectedNodeIds.has(node.id);
+    const isPrimarySelected = this.selectedNodeId === node.id;
     const isRoot = node.id === this.docData.root.id;
     const rawText = node.data?.text || "Topic";
     const isCompleted = /^\[[xX]\]\s/.test(rawText);
+    const nodeStyle = normalizeNodeStyle(node.data?.style) || {};
 
-    const signature = JSON.stringify([node.data, node._w, node._h, node._lines, isSelected, isRoot, this.theme, node.children?.length, isCompleted]);
+    const signature = JSON.stringify([node.data, node._w, node._h, node._lines, isSelected, isPrimarySelected, isRoot, this.theme, node.children?.length, isCompleted]);
     this.seenNodes = this.seenNodes || new Set();
     this.seenNodes.add(node.id);
     const cached = this.nodeElements ? this.nodeElements.get(node.id) : null;
@@ -1368,12 +1991,21 @@ class CrispMindCanvas {
       cached._mindNode = node;
       cached.style.visibility = this.editorNodeId === node.id ? "hidden" : "";
       cached.setAttribute("transform", `translate(${node._x}, ${node._y})`);
+      cached.classList.toggle("is-presentation-current", currentPresentationNodeId === node.id);
+      cached.classList.toggle("is-presentation-dimmed", !!currentPresentationNodeId && currentPresentationNodeId !== node.id);
+      cached.classList.toggle("is-selected", isSelected);
+      cached.classList.toggle("is-primary-selected", isPrimarySelected);
       return;
     }
     cached?.remove();
     const g = this.document.createElementNS("http://www.w3.org/2000/svg", "g");
     g._mindNode = node; g._signature = signature;
     g.style.visibility = this.editorNodeId === node.id ? "hidden" : "";
+    g.classList.add("crisp-mind-node");
+    if (isSelected) g.classList.add("is-selected");
+    if (isPrimarySelected) g.classList.add("is-primary-selected");
+    if (currentPresentationNodeId === node.id) g.classList.add("is-presentation-current");
+    if (currentPresentationNodeId && currentPresentationNodeId !== node.id) g.classList.add("is-presentation-dimmed");
     if (isCompleted && g.classList?.add) g.classList.add("is-task-completed");
     if (this.nodeElements) this.nodeElements.set(node.id, g);
     g.setAttribute("transform", `translate(${node._x}, ${node._y})`);
@@ -1383,36 +2015,61 @@ class CrispMindCanvas {
     titleEl.textContent = node.data.text;
     g.appendChild(titleEl);
 
-    const rect = this.document.createElementNS("http://www.w3.org/2000/svg", "rect");
-    rect.setAttribute("width", node._w);
-    rect.setAttribute("height", node._h);
-    rect.setAttribute("rx", this.theme.borderRadius || 8);
-    rect.setAttribute("ry", this.theme.borderRadius || 8);
-
-    if (isRoot) {
-      rect.setAttribute("fill", this.theme.accentColor || "#7c3aed");
-      rect.setAttribute("stroke", isSelected ? "#ffffff" : "transparent");
-      rect.setAttribute("stroke-width", isSelected ? "3" : "0");
-      rect.style.filter = "drop-shadow(0 4px 12px rgba(124, 58, 237, 0.25))";
+    const shape = nodeStyle.shape || "rounded";
+    let shapeEl;
+    if (shape === "ellipse") {
+      shapeEl = this.document.createElementNS("http://www.w3.org/2000/svg", "ellipse");
+      shapeEl.setAttribute("cx", node._w / 2);
+      shapeEl.setAttribute("cy", node._h / 2);
+      shapeEl.setAttribute("rx", node._w / 2);
+      shapeEl.setAttribute("ry", node._h / 2);
     } else {
-      rect.setAttribute("fill", this.theme.nodeBackground || "#262626");
-      rect.setAttribute("stroke", isSelected ? (this.theme.accentColor || "#7c3aed") : (this.theme.borderColor || "#3e3e3e"));
-      rect.setAttribute("stroke-width", isSelected ? "2.5" : "1");
-      if (isCompleted && !isSelected) rect.setAttribute("stroke-dasharray", "4 2");
-      rect.style.filter = "drop-shadow(0 2px 6px rgba(0, 0, 0, 0.05))";
+      shapeEl = this.document.createElementNS("http://www.w3.org/2000/svg", "rect");
+      shapeEl.setAttribute("x", "0");
+      shapeEl.setAttribute("y", "0");
+      shapeEl.setAttribute("width", node._w);
+      shapeEl.setAttribute("height", node._h);
+      const radius = shape === "rectangle"
+        ? 0
+        : shape === "pill"
+          ? node._h / 2
+          : this.theme.borderRadius || 8;
+      shapeEl.setAttribute("rx", radius);
+      shapeEl.setAttribute("ry", radius);
     }
-    g.appendChild(rect);
+    shapeEl.setAttribute("data-node-shape", "true");
+
+    const fill = nodeStyle.fill || (isRoot ? (this.theme.accentColor || "#7c3aed") : (this.theme.nodeBackground || "#262626"));
+    const defaultBorder = isRoot ? "transparent" : (this.theme.borderColor || "#3e3e3e");
+    const selectedBorder = this.theme.activeBorderColor || this.theme.accentColor || "#7c3aed";
+    const borderColor = nodeStyle.borderColor || (isSelected ? selectedBorder : defaultBorder);
+    const configuredBorderWidth = Number.isFinite(nodeStyle.borderWidth) ? nodeStyle.borderWidth : (isRoot ? 0 : 1);
+    shapeEl.setAttribute("fill", fill);
+    shapeEl.setAttribute("stroke", borderColor);
+    shapeEl.setAttribute("stroke-width", String(isSelected ? Math.max(2.5, configuredBorderWidth) : configuredBorderWidth));
+    if (isCompleted && !isSelected && shape !== "ellipse") shapeEl.setAttribute("stroke-dasharray", "4 2");
+    shapeEl.style.filter = isRoot
+      ? (this.theme.rootShadow || "drop-shadow(0 4px 12px rgba(124, 58, 237, 0.25))")
+      : (this.theme.nodeShadow || "drop-shadow(0 2px 6px rgba(0, 0, 0, 0.05))");
+    g.appendChild(shapeEl);
 
     // Text element
     const textEl = this.document.createElementNS("http://www.w3.org/2000/svg", "text");
-    textEl.setAttribute("x", node._w / 2);
+    const align = nodeStyle.align || "center";
+    const textX = align === "left" ? 14 : align === "right" ? node._w - 14 : node._w / 2;
+    const textAnchor = align === "left" ? "start" : align === "right" ? "end" : "middle";
+    const fontSize = nodeStyle.fontSize || (isRoot ? 14 : 13);
+    const lineHeight = Math.max(18, Math.round(fontSize * 1.42));
+    const textColor = nodeStyle.textColor || (isRoot ? "#ffffff" : this.theme.textColor);
+    textEl.setAttribute("x", textX);
     textEl.setAttribute("y", node._h / 2);
-    textEl.setAttribute("text-anchor", "middle");
+    textEl.setAttribute("text-anchor", textAnchor);
     textEl.setAttribute("dominant-baseline", "central");
-    textEl.setAttribute("fill", isRoot ? "#ffffff" : this.theme.textColor);
-    textEl.setAttribute("font-size", isRoot ? "14px" : "13px");
-    textEl.setAttribute("font-weight", isRoot ? "600" : "450");
-    textEl.setAttribute("font-family", "var(--font-interface)");
+    textEl.setAttribute("fill", textColor);
+    textEl.setAttribute("font-size", `${fontSize}px`);
+    textEl.setAttribute("font-weight", String(nodeStyle.fontWeight || (isRoot ? 600 : 450)));
+    textEl.setAttribute("font-family", this.theme.fontFamily || "var(--font-interface)");
+    textEl.style.fontFamily = this.theme.fontFamily || "var(--font-interface)";
 
     const link = mindNodeLink(rawText, this.options.vaultName);
     textEl.setAttribute("class", "crisp-mind-node-label");
@@ -1423,7 +2080,7 @@ class CrispMindCanvas {
     }
     if (link) {
       textEl.setAttribute("text-decoration", "underline");
-      textEl.style.fill = isRoot ? "#ffffff" : this.theme.accentColor;
+      textEl.style.fill = nodeStyle.textColor || (isRoot ? "#ffffff" : this.theme.accentColor);
       textEl.style.cursor = "pointer";
       textEl.setAttribute("role", "link");
       textEl.addEventListener("click", e => {
@@ -1439,41 +2096,56 @@ class CrispMindCanvas {
     textEl.textContent = "";
     (node._lines || [rawText]).forEach((line, index, lines) => {
       const span = this.document.createElementNS("http://www.w3.org/2000/svg", "tspan");
-      span.setAttribute("x", node._w / 2);
-      span.setAttribute("y", node._h / 2 + (index - (lines.length - 1) / 2) * 20);
+      span.setAttribute("x", textX);
+      span.setAttribute("y", node._h / 2 + (index - (lines.length - 1) / 2) * lineHeight);
       span.textContent = line;
       textEl.appendChild(span);
     });
     g.appendChild(textEl);
 
+    if (node.data?.note) {
+      const note = this.document.createElementNS("http://www.w3.org/2000/svg", "g");
+      note.setAttribute("class", "crisp-mind-note-indicator");
+      const circle = this.document.createElementNS("http://www.w3.org/2000/svg", "circle");
+      circle.setAttribute("cx", node._w - 9);
+      circle.setAttribute("cy", 9);
+      circle.setAttribute("r", 5);
+      circle.setAttribute("fill", this.theme.accentColor || "#7c3aed");
+      const mark = this.document.createElementNS("http://www.w3.org/2000/svg", "text");
+      mark.setAttribute("x", node._w - 9);
+      mark.setAttribute("y", 9.5);
+      mark.setAttribute("text-anchor", "middle");
+      mark.setAttribute("dominant-baseline", "central");
+      mark.setAttribute("font-size", "8");
+      mark.setAttribute("font-weight", "700");
+      mark.setAttribute("fill", "#ffffff");
+      mark.textContent = "N";
+      note.append(circle, mark);
+      g.appendChild(note);
+    }
+
     // Click handler
     g.addEventListener("click", (e) => {
       e.stopPropagation();
+      if (this.presentationActive) return;
       if (this.suppressClickUntil > Date.now()) return;
       const node = g._mindNode;
-      this.selectedNodeId = node.id;
       this.container.focus({ preventScroll: true });
-      // Keep the same SVG element under the pointer so native double-click survives.
-      for (const element of this.nodesGroup.children) {
-        const box = element.querySelector("rect");
-        const selected = element.getAttribute("data-node-id") === node.id;
-        const root = element.getAttribute("data-node-id") === this.docData.root.id;
-        box.setAttribute("stroke", selected ? this.theme.activeBorderColor : (root ? "transparent" : this.theme.borderColor));
-        box.setAttribute("stroke-width", selected ? "2.5" : (root ? "0" : "1"));
-      }
-      if (this.options.onSelectNode) {
-        const screenX = (node._x + node._w / 2) * this.scale + this.translateX;
-        const screenY = node._y * this.scale + this.translateY;
-        this.options.onSelectNode(node, { x: screenX, y: screenY });
-      }
+      this.handleNodeClick(node, e);
     });
 
     // Double click to edit
     g.addEventListener("dblclick", (e) => {
       e.stopPropagation();
+      if (this.presentationActive) return;
       this.editNodeText(g._mindNode);
     });
-    g.addEventListener("contextmenu", e => { e.preventDefault(); e.stopPropagation(); this.selectedNodeId = g._mindNode.id; this.options.onContextMenu?.(g._mindNode, e); });
+    g.addEventListener("contextmenu", e => {
+      e.preventDefault(); e.stopPropagation();
+      if (this.presentationActive) return;
+      if (!this.selectedNodeIds.has(g._mindNode.id)) this.setSelectionState([g._mindNode.id], g._mindNode.id);
+      this.options.onContextMenu?.(g._mindNode, e);
+    });
     if (node.children?.length) {
       const fold = this.document.createElementNS("http://www.w3.org/2000/svg", "g");
       fold.setAttribute("data-collapse", node.id); fold.setAttribute("class", "crisp-mind-collapse");
@@ -1495,11 +2167,321 @@ class CrispMindCanvas {
       circle.setAttribute("fill", this.theme.nodeBackground); circle.setAttribute("stroke", this.theme.borderColor); fold.appendChild(circle);
       const label = this.document.createElementNS("http://www.w3.org/2000/svg", "text");
       label.setAttribute("x", foldX); label.setAttribute("y", foldY); label.setAttribute("text-anchor", "middle"); label.setAttribute("dominant-baseline", "central"); label.setAttribute("font-size", "11"); label.setAttribute("fill", this.theme.textColor);
-      label.textContent = node.data.collapsed ? String(node.children.length) : "−"; fold.appendChild(label);
+      label.textContent = node.data.collapsed && node.id !== this.branchFocusId ? String(node.children.length) : "−"; fold.appendChild(label);
       fold.addEventListener("click", e => { e.stopPropagation(); this.toggleCollapse(g._mindNode.id); });
       g.appendChild(fold);
     }
     this.nodesGroup.appendChild(g);
+  }
+
+  subtreeBounds(node) {
+    const visible = new Set(this.visibleNodes().map(item => item.id));
+    const nodes = [];
+    const walk = current => {
+      if (!current || !visible.has(current.id)) return;
+      nodes.push(current);
+      (current.children || []).forEach(walk);
+    };
+    walk(node);
+    if (!nodes.length) {
+      return {x: node._x, y: node._y, width: node._w, height: node._h};
+    }
+    const x = Math.min(...nodes.map(item => item._x));
+    const y = Math.min(...nodes.map(item => item._y));
+    return {
+      x,
+      y,
+      width: Math.max(...nodes.map(item => item._x + item._w)) - x,
+      height: Math.max(...nodes.map(item => item._y + item._h)) - y
+    };
+  }
+
+  summaryBounds(node) {
+    const visible = new Set(this.visibleNodes().map(item => item.id));
+    const visibleChildren = (node?.children || []).filter(child => visible.has(child.id));
+    if (node?.children?.length && !visibleChildren.length) return null;
+    const summaryNodes = visibleChildren.length ? visibleChildren : [node];
+    const childBounds = summaryNodes.map(item => this.subtreeBounds(item));
+    return childBounds.reduce((acc, box) => {
+      const minX = Math.min(acc.x, box.x);
+      const minY = Math.min(acc.y, box.y);
+      const maxX = Math.max(acc.x + acc.width, box.x + box.width);
+      const maxY = Math.max(acc.y + acc.height, box.y + box.height);
+      return {x: minX, y: minY, width: maxX - minX, height: maxY - minY};
+    }, {...childBounds[0]});
+  }
+
+  annotationFill(color) {
+    const hex = normalizeMindColor(color);
+    return hex ? `${hex}18` : "rgba(124, 58, 237, 0.10)";
+  }
+
+  annotationLabelWidth(text) {
+    return Math.max(34, Math.min(220, [...text].reduce((sum, char) => sum + (/[^\x00-\xff]/.test(char) ? 11 : 6.5), 0) + 16));
+  }
+
+  annotationLabelLabel(text, x, y, color) {
+    if (!text) return null;
+    const group = this.document.createElementNS("http://www.w3.org/2000/svg", "g");
+    group.setAttribute("class", "crisp-mind-annotation-label");
+    const width = this.annotationLabelWidth(text);
+    const rect = this.document.createElementNS("http://www.w3.org/2000/svg", "rect");
+    rect.setAttribute("x", x);
+    rect.setAttribute("y", y);
+    rect.setAttribute("width", width);
+    rect.setAttribute("height", 22);
+    rect.setAttribute("rx", 7);
+    rect.setAttribute("fill", this.theme.nodeBackground || "#ffffff");
+    rect.setAttribute("stroke", color);
+    rect.setAttribute("stroke-width", "1");
+    const label = this.document.createElementNS("http://www.w3.org/2000/svg", "text");
+    label.setAttribute("x", x + 8);
+    label.setAttribute("y", y + 15);
+    label.setAttribute("fill", this.theme.textColor || "#222222");
+    label.setAttribute("font-size", "11");
+    label.textContent = text;
+    group.append(rect, label);
+    return group;
+  }
+
+  relationEdge(node, towardX, towardY) {
+    const cx = node._x + node._w / 2;
+    const cy = node._y + node._h / 2;
+    const dx = towardX - cx;
+    const dy = towardY - cy;
+    if (!dx && !dy) return {x: cx, y: cy};
+    const halfW = node._w / 2 + 2;
+    const halfH = node._h / 2 + 2;
+    const scaleX = dx ? halfW / Math.abs(dx) : Infinity;
+    const scaleY = dy ? halfH / Math.abs(dy) : Infinity;
+    const scale = Math.min(scaleX, scaleY);
+    return {x: cx + dx * scale, y: cy + dy * scale};
+  }
+
+  renderBoundaries() {
+    if (!this.boundaryGroup || !Array.isArray(this.docData.boundaries)) return;
+    const visible = new Set(this.visibleNodes().map(node => node.id));
+    for (const boundary of this.docData.boundaries) {
+      const node = this.findNode(boundary.nodeId);
+      if (!node || !visible.has(node.id)) continue;
+      const bounds = this.subtreeBounds(node);
+      const color = boundary.color || this.theme.accentColor || "#7c3aed";
+      const padding = 18;
+      const rect = this.document.createElementNS("http://www.w3.org/2000/svg", "rect");
+      rect.setAttribute("x", bounds.x - padding);
+      rect.setAttribute("y", bounds.y - padding);
+      rect.setAttribute("width", bounds.width + padding * 2);
+      rect.setAttribute("height", bounds.height + padding * 2);
+      rect.setAttribute("rx", 18);
+      rect.setAttribute("fill", this.annotationFill(color));
+      rect.setAttribute("stroke", color);
+      rect.setAttribute("stroke-width", "1.5");
+      rect.setAttribute("stroke-dasharray", "7 5");
+      rect.setAttribute("pointer-events", "none");
+      this.boundaryGroup.appendChild(rect);
+      if (!boundary.label) continue;
+      const labelWidth = this.annotationLabelWidth(boundary.label);
+      const labelHeight = 22;
+      const labelGap = 8;
+      const left = bounds.x - padding;
+      const right = bounds.x + bounds.width + padding;
+      const top = bounds.y - padding;
+      const bottom = bounds.y + bounds.height + padding;
+      const centerY = bounds.y + bounds.height / 2 - labelHeight / 2;
+      const candidates = [
+        {side: "top", x: left, y: top - labelHeight - labelGap},
+        {side: "top", x: right - labelWidth, y: top - labelHeight - labelGap},
+        {side: "bottom", x: left, y: bottom + labelGap},
+        {side: "bottom", x: right - labelWidth, y: bottom + labelGap},
+        {side: "left", x: left - labelWidth - labelGap, y: centerY},
+        {side: "right", x: right + labelGap, y: centerY}
+      ];
+      const obstacles = this.visibleNodes().map(item => ({
+        x: item._x,
+        y: item._y,
+        width: item._w,
+        height: item._h
+      }));
+      const overlapArea = (a, b) => {
+        const width = Math.max(0, Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x));
+        const height = Math.max(0, Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y));
+        return width * height;
+      };
+      const labelPosition = candidates
+        .map(candidate => ({
+          ...candidate,
+          overlap: obstacles.reduce((sum, obstacle) => sum + overlapArea(
+            {x: candidate.x, y: candidate.y, width: labelWidth, height: labelHeight},
+            obstacle
+          ), 0)
+        }))
+        .sort((a, b) => a.overlap - b.overlap)[0];
+      const connector = this.document.createElementNS("http://www.w3.org/2000/svg", "path");
+      const labelCenterX = labelPosition.x + labelWidth / 2;
+      const labelCenterY = labelPosition.y + labelHeight / 2;
+      let connectorPath = "";
+      if (labelPosition.side === "top") {
+        connectorPath = `M ${labelCenterX} ${labelPosition.y + labelHeight} V ${top}`;
+      } else if (labelPosition.side === "bottom") {
+        connectorPath = `M ${labelCenterX} ${labelPosition.y} V ${bottom}`;
+      } else if (labelPosition.side === "left") {
+        connectorPath = `M ${labelPosition.x + labelWidth} ${labelCenterY} H ${left}`;
+      } else {
+        connectorPath = `M ${labelPosition.x} ${labelCenterY} H ${right}`;
+      }
+      connector.setAttribute("d", connectorPath);
+      connector.setAttribute("fill", "none");
+      connector.setAttribute("stroke", color);
+      connector.setAttribute("stroke-width", "1");
+      connector.setAttribute("stroke-linecap", "round");
+      connector.setAttribute("pointer-events", "none");
+      this.annotationsGroup.appendChild(connector);
+      const label = this.annotationLabelLabel(boundary.label, labelPosition.x, labelPosition.y, color);
+      if (label) this.annotationsGroup.appendChild(label);
+    }
+  }
+
+  renderRelations() {
+    if (!this.relationsGroup || !Array.isArray(this.docData.relations)) return;
+    const visible = new Set(this.visibleNodes().map(node => node.id));
+    for (const relation of this.docData.relations) {
+      const from = this.findNode(relation.from);
+      const to = this.findNode(relation.to);
+      if (!from || !to || !visible.has(from.id) || !visible.has(to.id)) continue;
+      const centerFrom = {x: from._x + from._w / 2, y: from._y + from._h / 2};
+      const centerTo = {x: to._x + to._w / 2, y: to._y + to._h / 2};
+      const start = this.relationEdge(from, centerTo.x, centerTo.y);
+      const end = this.relationEdge(to, centerFrom.x, centerFrom.y);
+      const color = relation.color || this.theme.accentColor || "#7c3aed";
+      const markerId = `crisp-mind-arrow-${relation.id.replace(/[^a-zA-Z0-9_-]/g, "")}`;
+      const defs = this.document.createElementNS("http://www.w3.org/2000/svg", "defs");
+      const marker = this.document.createElementNS("http://www.w3.org/2000/svg", "marker");
+      marker.setAttribute("id", markerId);
+      marker.setAttribute("viewBox", "0 0 10 10");
+      marker.setAttribute("refX", "9");
+      marker.setAttribute("refY", "5");
+      marker.setAttribute("markerWidth", "6");
+      marker.setAttribute("markerHeight", "6");
+      marker.setAttribute("orient", "auto-start-reverse");
+      const arrow = this.document.createElementNS("http://www.w3.org/2000/svg", "path");
+      arrow.setAttribute("d", "M 0 0 L 10 5 L 0 10 z");
+      arrow.setAttribute("fill", color);
+      marker.appendChild(arrow);
+      defs.appendChild(marker);
+      this.relationsGroup.appendChild(defs);
+
+      const dx = end.x - start.x;
+      const dy = end.y - start.y;
+      const distance = Math.max(1, Math.hypot(dx, dy));
+      const bend = Math.min(90, Math.max(34, distance * 0.18));
+      const mx = (start.x + end.x) / 2 - (dy / distance) * bend;
+      const my = (start.y + end.y) / 2 + (dx / distance) * bend;
+      const path = this.document.createElementNS("http://www.w3.org/2000/svg", "path");
+      path.setAttribute("d", `M ${start.x} ${start.y} Q ${mx} ${my} ${end.x} ${end.y}`);
+      path.setAttribute("fill", "none");
+      path.setAttribute("stroke", color);
+      path.setAttribute("stroke-width", "2");
+      path.setAttribute("stroke-linecap", "round");
+      path.setAttribute("marker-end", `url(#${markerId})`);
+      path.setAttribute("class", "crisp-mind-relation");
+      path.addEventListener("contextmenu", event => {
+        event.preventDefault(); event.stopPropagation();
+        this.options.onRelationContextMenu?.(relation, event);
+      });
+      this.relationsGroup.appendChild(path);
+      for (const point of [start, end]) {
+        const dot = this.document.createElementNS("http://www.w3.org/2000/svg", "circle");
+        dot.setAttribute("cx", point.x);
+        dot.setAttribute("cy", point.y);
+        dot.setAttribute("r", "3");
+        dot.setAttribute("fill", color);
+        dot.setAttribute("pointer-events", "none");
+        this.relationsGroup.appendChild(dot);
+      }
+      if (relation.label) {
+        const label = this.annotationLabelLabel(relation.label, mx - 18, my - 20, color);
+        label?.setAttribute("class", "crisp-mind-annotation-label crisp-mind-relation-label");
+        if (label) this.relationsGroup.appendChild(label);
+      }
+    }
+  }
+
+  renderSummaries() {
+    if (!this.annotationsGroup || !Array.isArray(this.docData.summaries)) return;
+    const visible = new Set(this.visibleNodes().map(node => node.id));
+    const rootCenter = this.docData.root._x + this.docData.root._w / 2;
+    for (const summary of this.docData.summaries) {
+      const node = this.findNode(summary.nodeId);
+      if (!node || !visible.has(node.id)) continue;
+      const bounds = this.summaryBounds(node);
+      if (!bounds) continue;
+      const color = summary.color || this.theme.accentColor || "#7c3aed";
+      const side = (bounds.x + bounds.width / 2) < rootCenter ? "left" : "right";
+      const labelText = summary.label || `概要 · ${mindNodeLink(node.data?.text || "", this.options.vaultName)?.display || node.data?.text || "分支"}`;
+      const width = Math.max(112, Math.min(250, [...labelText].reduce((sum, char) => sum + (/[^\x00-\xff]/.test(char) ? 12 : 7), 0) + 34));
+      const height = 32;
+      const centerY = bounds.y + bounds.height / 2;
+      const braceGap = 24;
+      const braceX = side === "left" ? bounds.x - braceGap : bounds.x + bounds.width + braceGap;
+      const edgeX = side === "left" ? bounds.x - 6 : bounds.x + bounds.width + 6;
+      const top = bounds.y - 4;
+      const bottom = bounds.y + bounds.height + 4;
+      const corner = Math.min(10, Math.max(5, bounds.height / 3));
+      const direction = side === "left" ? -1 : 1;
+      const path = this.document.createElementNS("http://www.w3.org/2000/svg", "path");
+      path.setAttribute(
+        "d",
+        `M ${edgeX} ${top} H ${braceX - direction * corner} ` +
+        `Q ${braceX} ${top} ${braceX} ${top + corner} ` +
+        `V ${bottom - corner} ` +
+        `Q ${braceX} ${bottom} ${braceX - direction * corner} ${bottom} ` +
+        `H ${edgeX} ` +
+        `M ${braceX} ${centerY} H ${side === "left" ? braceX - 20 : braceX + 20}`
+      );
+      path.setAttribute("fill", "none");
+      path.setAttribute("stroke", color);
+      path.setAttribute("stroke-width", "1.6");
+      path.setAttribute("stroke-linecap", "round");
+      path.setAttribute("stroke-linejoin", "round");
+      path.setAttribute("stroke-dasharray", "6 4");
+      path.setAttribute("pointer-events", "none");
+      this.annotationsGroup.appendChild(path);
+
+      const group = this.document.createElementNS("http://www.w3.org/2000/svg", "g");
+      group.setAttribute("class", "crisp-mind-summary");
+      group.setAttribute("data-summary-id", summary.id);
+      const x = side === "left" ? braceX - 20 - width : braceX + 20;
+      const y = centerY - height / 2;
+      const box = this.document.createElementNS("http://www.w3.org/2000/svg", "rect");
+      box.setAttribute("x", x);
+      box.setAttribute("y", y);
+      box.setAttribute("width", width);
+      box.setAttribute("height", height);
+      box.setAttribute("rx", height / 2);
+      box.setAttribute("fill", this.annotationFill(color));
+      box.setAttribute("stroke", color);
+      box.setAttribute("stroke-width", "1.2");
+      const marker = this.document.createElementNS("http://www.w3.org/2000/svg", "circle");
+      marker.setAttribute("cx", side === "left" ? x + width - 13 : x + 13);
+      marker.setAttribute("cy", centerY);
+      marker.setAttribute("r", "3.2");
+      marker.setAttribute("fill", color);
+      const text = this.document.createElementNS("http://www.w3.org/2000/svg", "text");
+      text.setAttribute("x", side === "left" ? x + 12 : x + 22);
+      text.setAttribute("y", centerY);
+      text.setAttribute("text-anchor", "start");
+      text.setAttribute("dominant-baseline", "central");
+      text.setAttribute("fill", color);
+      text.setAttribute("font-size", "11.5");
+      text.setAttribute("font-weight", "600");
+      text.textContent = labelText.length > 24 ? `${labelText.slice(0, 23)}…` : labelText;
+      group.append(box, marker, text);
+      group.addEventListener("contextmenu", event => {
+        event.preventDefault(); event.stopPropagation();
+        this.options.onSummaryContextMenu?.(summary, event);
+      });
+      this.annotationsGroup.appendChild(group);
+    }
   }
 
   editNodeText(node) {
@@ -1593,6 +2575,7 @@ class CrispMindCanvas {
 
   updateTransform() {
     this.options.onDeselect?.();
+    if (!this.viewportGroup) return;
     this.viewportGroup.setAttribute(
       "transform",
       `translate(${this.translateX}, ${this.translateY}) scale(${this.scale})`
@@ -1654,7 +2637,7 @@ class CrispMindCanvas {
 
   bindEvents() {
     this.listen(this.nodesGroup, "pointerdown", e => {
-      if (this.options.readOnly || this.editor || e.button !== 0 || e.target.closest("[data-collapse]")) return;
+      if (this.presentationActive || this.options.readOnly || this.editor || e.button !== 0 || e.target.closest("[data-collapse]")) return;
       const element = e.target.closest("[data-node-id]");
       if (!element || element.dataset.nodeId === this.docData.root.id) return;
       this.drag = {id: element.dataset.nodeId, x: e.clientX, y: e.clientY, active: false};
@@ -1674,7 +2657,7 @@ class CrispMindCanvas {
       if (targetEl && this.nodesGroup.contains(targetEl)) {
         const target = this.findNode(targetEl.dataset.nodeId), moving = this.findNode(drag.id);
         if (target && moving && !this.findNode(target.id, moving)) {
-          const box = targetEl.querySelector("rect").getBoundingClientRect();
+          const box = targetEl.querySelector("[data-node-shape]").getBoundingClientRect();
           const ratio = (e.clientY - box.top) / box.height;
           drag.placement = target.id === this.docData.root.id ? "inside" : ratio < 0.25 ? "before" : ratio > 0.75 ? "after" : "inside";
           drag.target = target.id; targetEl.setAttribute("data-drop", drag.placement);
@@ -1703,8 +2686,9 @@ class CrispMindCanvas {
         this.isPanning = true;
         this.startX = e.clientX - this.translateX;
         this.startY = e.clientY - this.translateY;
-        this.selectedNodeId = null;
+        this.setSelectionState([], null);
         this.render();
+        this.options.onSelectionChange?.([]);
         if (this.options.onDeselect) this.options.onDeselect();
       }
     });
@@ -1744,7 +2728,28 @@ class CrispMindCanvas {
     }, { passive: false });
 
     this.listen(this.container, "keydown", (e) => {
+      if (this.presentationActive && !e.target.closest?.("input, textarea, [contenteditable=true]")) {
+        if (e.key === "Escape") {
+          e.preventDefault(); e.stopPropagation(); this.stopPresentation(); return;
+        }
+        if (e.key === "ArrowRight" || e.key === "ArrowDown" || e.key === " " || e.key === "PageDown") {
+          e.preventDefault(); e.stopPropagation();
+          this.goToPresentationStep(Math.min(this.getPresentationSteps().length - 1, this.presentationIndex + 1));
+          return;
+        }
+        if (e.key === "ArrowLeft" || e.key === "ArrowUp" || e.key === "PageUp") {
+          e.preventDefault(); e.stopPropagation();
+          this.goToPresentationStep(Math.max(0, this.presentationIndex - 1));
+          return;
+        }
+        return;
+      }
       if (e.isComposing || e.target.closest?.("input, textarea, select, button, [contenteditable=true]")) return;
+      if (e.key === "Escape" && !this.drag) {
+        this.setNodeSelection([], null);
+        this.options.onDeselect?.();
+        return;
+      }
       if ((e.metaKey || e.ctrlKey) && (e.key.toLowerCase() === "z" || e.key.toLowerCase() === "y")) {
         e.preventDefault();
         e.stopPropagation();
@@ -1767,7 +2772,8 @@ class CrispMindCanvas {
         e.preventDefault(); this.toggleCollapse();
       } else if (e.key === "Delete" || e.key === "Backspace") {
         e.preventDefault();
-        this.deleteNode(this.selectedNodeId);
+        if (this.selectedNodeIds.size > 1) this.deleteSelectedNodes();
+        else this.deleteNode(this.selectedNodeId);
       } else if (e.key === " " || e.key === "Spacebar") {
         e.preventDefault();
         const node = this.findNode(this.selectedNodeId);
@@ -1790,8 +2796,22 @@ class CrispMindCanvas {
     const nodes = [];
     const walk = n => { nodes.push(n); (n.children || []).forEach(walk); };
     this.visibleNodes().forEach(n => nodes.push(n));
-    const x = Math.min(...nodes.map(n => n._x)), y = Math.min(...nodes.map(n => n._y));
-    return {x, y, width: Math.max(...nodes.map(n => n._x + n._w)) - x, height: Math.max(...nodes.map(n => n._y + n._h)) - y};
+    let x = Math.min(...nodes.map(n => n._x)), y = Math.min(...nodes.map(n => n._y));
+    let maxX = Math.max(...nodes.map(n => n._x + n._w));
+    let maxY = Math.max(...nodes.map(n => n._y + n._h));
+    for (const group of [this.boundaryGroup, this.relationsGroup, this.annotationsGroup]) {
+      if (typeof group?.getBBox !== "function") continue;
+      try {
+        const box = group.getBBox();
+        if (Number.isFinite(box.x) && box.width > 0 && box.height > 0) {
+          x = Math.min(x, box.x);
+          y = Math.min(y, box.y);
+          maxX = Math.max(maxX, box.x + box.width);
+          maxY = Math.max(maxY, box.y + box.height);
+        }
+      } catch (_) {}
+    }
+    return {x, y, width: maxX - x, height: maxY - y};
   }
 
   exportSVG() {
@@ -2010,6 +3030,10 @@ class CrispMindEditView extends TextFileView {
       },
       onContextMenu: (node, event) => this.showNodeMenu(node, event),
       onSelectNode: (node, screenCoord) => {
+        if (this.inspectorOpen) {
+          if (this.islandEl) this.islandEl.style.display = "none";
+          return;
+        }
         this.renderNodeIsland(node, screenCoord);
       },
       onDeselect: () => {
@@ -2020,6 +3044,12 @@ class CrispMindEditView extends TextFileView {
           this.zoomBadge.textContent = `${Math.round(scale * 100)}%`;
         }
       },
+      onBranchFocus: (node, path) => this.updateBranchBar(node, path),
+      onPresentationChange: (state) => this.updatePresentationBar(state),
+      onSelectionChange: () => this.handleSelectionChange(),
+      onRender: () => this.renderOutline(),
+      onRelationContextMenu: (relation, event) => this.showRelationMenu(relation, event),
+      onSummaryContextMenu: (summary, event) => this.showSummaryMenu(summary, event),
       onOpenLink: (linkTarget) => {
         void this.openLinkedNote(linkTarget);
       },
@@ -2039,6 +3069,54 @@ class CrispMindEditView extends TextFileView {
       cls: `crisp-mind-floating-toolbar ${this.plugin.settings.toolbarPosition === "top" ? "toolbar-top" : ""}`
     });
 
+    this.branchBarEl = container.createDiv({ cls: "crisp-mind-branch-bar" });
+    this.branchBarEl.style.display = "none";
+    const branchBack = this.branchBarEl.createEl("button", { cls: "crisp-mind-branch-back", attr: { "aria-label": "返回完整导图" } });
+    setIcon(branchBack, "arrow-left");
+    branchBack.createSpan({ text: "全图" });
+    branchBack.addEventListener("click", () => this.canvasController.clearBranchFocus());
+    this.branchPathEl = this.branchBarEl.createDiv({ cls: "crisp-mind-branch-path" });
+
+    this.presentationBarEl = container.createDiv({ cls: "crisp-mind-presentation-bar" });
+    this.presentationBarEl.style.display = "none";
+    const presentationPrev = this.presentationBarEl.createEl("button", { cls: "crisp-mind-presentation-nav", attr: { "aria-label": "上一步" } });
+    setIcon(presentationPrev, "chevron-left");
+    presentationPrev.addEventListener("click", () => this.canvasController.goToPresentationStep(this.canvasController.presentationIndex - 1));
+    this.presentationProgressEl = this.presentationBarEl.createSpan({ cls: "crisp-mind-presentation-progress" });
+    const presentationNext = this.presentationBarEl.createEl("button", { cls: "crisp-mind-presentation-nav", attr: { "aria-label": "下一步" } });
+    setIcon(presentationNext, "chevron-right");
+    presentationNext.addEventListener("click", () => this.canvasController.goToPresentationStep(this.canvasController.presentationIndex + 1));
+    const presentationExit = this.presentationBarEl.createEl("button", { cls: "crisp-mind-presentation-exit", text: "退出演示" });
+    presentationExit.addEventListener("click", () => this.canvasController.stopPresentation());
+
+    this.outlinePanelEl = container.createDiv({ cls: "crisp-mind-outline-panel" });
+    this.outlinePanelEl.style.display = "none";
+    const outlineHeader = this.outlinePanelEl.createDiv({ cls: "crisp-mind-outline-header" });
+    outlineHeader.createSpan({ cls: "crisp-mind-outline-title", text: "大纲" });
+    this.outlineDepthEl = outlineHeader.createEl("select", { cls: "crisp-mind-outline-depth", attr: { "aria-label": "大纲显示层级" } });
+    for (const [value, label] of [["all", "全部层级"], ["1", "1 级"], ["2", "2 级"], ["3", "3 级"], ["4", "4 级"], ["5", "5 级"]]) {
+      this.outlineDepthEl.createEl("option", { value, text: label });
+    }
+    this.outlineDepthEl.value = "all";
+    this.outlineDepthEl.addEventListener("change", () => this.renderOutline());
+    const outlineClose = outlineHeader.createEl("button", { attr: { "aria-label": "关闭大纲" } });
+    setIcon(outlineClose, "x");
+    outlineClose.addEventListener("click", () => {
+      this.outlinePanelEl.style.display = "none";
+      this.canvasController.render();
+    });
+    this.makeFloatingPanelDraggable(this.outlinePanelEl, outlineHeader);
+    this.outlineFilterEl = this.outlinePanelEl.createEl("input", {
+      cls: "crisp-mind-outline-filter",
+      attr: { type: "search", placeholder: "筛选节点…", "aria-label": "筛选大纲节点" }
+    });
+    this.outlineTreeEl = this.outlinePanelEl.createDiv({ cls: "crisp-mind-outline-tree" });
+    this.outlineFilterEl.addEventListener("input", () => this.renderOutline());
+
+    this.inspectorEl = container.createDiv({ cls: "crisp-mind-inspector" });
+    this.inspectorEl.style.display = "none";
+    this.inspectorOpen = false;
+
     // Action Island
     this.islandEl = container.createDiv({ cls: "crisp-mind-node-island" });
     this.islandEl.style.display = "none";
@@ -2052,6 +3130,354 @@ class CrispMindEditView extends TextFileView {
       hint.textContent = "大纲预览 · 原笔记保持不变";
     }
     this.canvasController.resetZoom();
+    this.renderOutline();
+    this.renderInspector();
+  }
+
+  updateBranchBar(node, path) {
+    if (!this.branchBarEl || !this.branchPathEl) return;
+    this.branchBarEl.style.display = node ? "flex" : "none";
+    this.branchPathEl.textContent = node ? path.join("  /  ") : "";
+  }
+
+  updatePresentationBar(state) {
+    if (!this.presentationBarEl || !this.presentationProgressEl) return;
+    this.presentationBarEl.style.display = state?.active ? "flex" : "none";
+    if (state?.active) {
+      this.presentationProgressEl.textContent = `${state.index + 1} / ${state.total}`;
+      const canPrev = state.index > 0;
+      const canNext = state.index < state.total - 1;
+      this.presentationBarEl.querySelectorAll(".crisp-mind-presentation-nav").forEach((button, index) => {
+        button.disabled = index === 0 ? !canPrev : !canNext;
+      });
+    }
+  }
+
+  handleSelectionChange() {
+    if (!this.canvasController.selectedNodes().length) this.inspectorOpen = false;
+    if (this.inspectorOpen) this.renderInspector();
+    else if (this.inspectorEl) {
+      this.inspectorEl.style.display = "none";
+      this.inspectorEl.empty();
+    }
+    this.renderOutline();
+  }
+
+  openInspector() {
+    if (!this.canvasController.selectedNodeIds.size) {
+      new Notice("请先选择至少一个节点");
+      return false;
+    }
+    this.inspectorOpen = true;
+    if (this.islandEl) this.islandEl.style.display = "none";
+    this.renderInspector();
+    return true;
+  }
+
+  closeInspector() {
+    this.inspectorOpen = false;
+    if (this.inspectorEl) {
+      this.inspectorEl.style.display = "none";
+      this.inspectorEl.empty();
+    }
+  }
+
+  renderOutline() {
+    if (!this.outlinePanelEl || !this.outlineTreeEl || this.outlinePanelEl.style.display === "none") return;
+    const query = (this.outlineFilterEl?.value || "").normalize("NFKC").trim().toLocaleLowerCase();
+    const controller = this.canvasController;
+    const selected = controller.selectedNodeIds;
+    const depthLimit = !query && this.outlineDepthEl?.value !== "all" ? Number(this.outlineDepthEl.value) : Infinity;
+    this.outlineTreeEl.empty();
+
+    const displayName = node => mindNodeLink(node.data?.text || "", controller.options.vaultName)?.display || node.data?.text || "Topic";
+    const matched = new Set();
+    if (query) {
+      const markMatches = node => {
+        const ownMatch = displayName(node).normalize("NFKC").toLocaleLowerCase().includes(query);
+        const childMatch = (node.children || []).some(markMatches);
+        if (ownMatch || childMatch) matched.add(node.id);
+        return ownMatch || childMatch;
+      };
+      markMatches(controller.docData.root);
+    }
+    const filtered = node => !query || matched.has(node.id);
+
+    const renderNode = (node, depth, isLast = false, isRoot = false) => {
+      if (!filtered(node)) return;
+      const level = depth + 1;
+      if (!query && level > depthLimit) return;
+      const row = this.outlineTreeEl.createDiv({
+        cls: `crisp-mind-outline-row${selected.has(node.id) ? " is-selected" : ""}${node.id === controller.selectedNodeId ? " is-primary" : ""}${isLast ? " is-last" : ""}${isRoot ? " is-root" : ""}`
+      });
+      row.style.setProperty("--outline-depth", String(depth));
+      const toggle = row.createEl("button", { cls: "crisp-mind-outline-toggle", attr: { "aria-label": node.data?.collapsed ? "展开" : "折叠" } });
+      if (node.children?.length) {
+        setIcon(toggle, node.data?.collapsed ? "chevron-right" : "chevron-down");
+        toggle.addEventListener("click", event => {
+          event.stopPropagation();
+          controller.toggleCollapse(node.id);
+        });
+      } else {
+        toggle.disabled = true;
+        toggle.classList.add("is-empty");
+        toggle.setAttribute("aria-hidden", "true");
+      }
+      const label = row.createEl("button", { cls: "crisp-mind-outline-label", attr: { title: displayName(node) } });
+      label.createSpan({ cls: "crisp-mind-outline-text", text: displayName(node) });
+      if (node.data?.note) label.createSpan({ cls: "crisp-mind-outline-note", text: "N" });
+      if (node.data?.style?.fill) {
+        const swatch = label.createSpan({ cls: "crisp-mind-outline-swatch" });
+        swatch.style.backgroundColor = node.data.style.fill;
+      }
+      label.addEventListener("click", event => {
+        if (event.shiftKey && controller.selectionAnchorId) controller.selectVisibleRange(controller.selectionAnchorId, node.id);
+        else controller.selectNode(node.id, true, { additive: event.metaKey || event.ctrlKey });
+      });
+      if (node.data?.collapsed && !query) return;
+      if (!query && level >= depthLimit) return;
+      const children = node.children || [];
+      children.forEach((child, index) => {
+        if (!query || filtered(child)) {
+          renderNode(child, depth + 1, index === children.length - 1, false);
+        }
+      });
+    };
+    renderNode(controller.docData.root, 0, false, true);
+  }
+
+  renderInspector() {
+    if (!this.inspectorEl) return;
+    const controller = this.canvasController;
+    const selected = controller.selectedNodes();
+    if (!this.inspectorOpen || !selected.length || this.readOnly) {
+      this.inspectorEl.style.display = "none";
+      this.inspectorEl.empty();
+      return;
+    }
+    this.inspectorEl.style.display = "flex";
+    this.inspectorEl.empty();
+
+    const primary = controller.findNode(controller.selectedNodeId) || selected[0];
+    const style = normalizeNodeStyle(primary.data?.style) || {};
+    const header = this.inspectorEl.createDiv({ cls: "crisp-mind-inspector-header" });
+    header.createSpan({ text: selected.length > 1 ? `已选 ${selected.length} 个节点` : "节点样式与备注" });
+    const close = header.createEl("button", { attr: { "aria-label": "关闭检查器" } });
+    setIcon(close, "x");
+    close.addEventListener("click", () => {
+      this.closeInspector();
+    });
+    this.makeFloatingPanelDraggable(this.inspectorEl, header);
+
+    const styleSection = this.inspectorEl.createDiv({ cls: "crisp-mind-inspector-section" });
+    styleSection.createDiv({ cls: "crisp-mind-inspector-title", text: selected.length > 1 ? "批量样式" : "节点样式" });
+
+    const field = (label, control) => {
+      const row = styleSection.createDiv({ cls: "crisp-mind-inspector-field" });
+      row.createSpan({ text: label });
+      row.appendChild(control);
+      return row;
+    };
+
+    const shape = styleSection.createEl("select");
+    for (const [value, label] of [["rounded", "圆角"], ["rectangle", "矩形"], ["pill", "胶囊"], ["ellipse", "椭圆"]]) {
+      shape.createEl("option", { value, text: label });
+    }
+    shape.value = style.shape || "rounded";
+    shape.addEventListener("change", () => controller.updateSelectedNodeStyles({ shape: shape.value }));
+    field("形状", shape);
+
+    const colorInput = (key, label) => {
+      const wrap = this.inspectorEl.createDiv({ cls: "crisp-mind-inspector-color" });
+      const input = wrap.createEl("input", { attr: { type: "color" } });
+      input.value = style[key] || (key === "fill"
+        ? (primary.id === controller.docData.root.id ? (controller.theme?.accentColor || "#7c3aed") : (controller.theme?.nodeBackground || "#ffffff"))
+        : key === "textColor"
+          ? (primary.id === controller.docData.root.id ? "#ffffff" : "#222222")
+          : "#8a8a8a");
+      input.addEventListener("change", () => controller.updateSelectedNodeStyles({ [key]: input.value }));
+      const clear = wrap.createEl("button", { text: "默认", attr: { "aria-label": `恢复${label}默认值` } });
+      clear.addEventListener("click", () => {
+        controller.updateSelectedNodeStyles({ [key]: null });
+        this.renderInspector();
+      });
+      return wrap;
+    };
+    field("填充", colorInput("fill", "填充"));
+    field("文字", colorInput("textColor", "文字颜色"));
+    field("边框", colorInput("borderColor", "边框颜色"));
+
+    const stepperControl = (value, min, max, onChange, suffix = "") => {
+      const wrap = this.inspectorEl.createDiv({ cls: "crisp-mind-inspector-stepper" });
+      const minus = wrap.createEl("button", { text: "−", attr: { type: "button", "aria-label": "减少" } });
+      const input = wrap.createEl("input", { attr: { type: "number", min: String(min), max: String(max), step: "1" } });
+      const unit = wrap.createSpan({ cls: "crisp-mind-inspector-stepper__unit", text: suffix });
+      const plus = wrap.createEl("button", { text: "+", attr: { type: "button", "aria-label": "增加" } });
+      input.value = String(value);
+      const apply = next => {
+        const normalized = Math.max(min, Math.min(max, Number(next) || min));
+        input.value = String(normalized);
+        minus.disabled = normalized <= min;
+        plus.disabled = normalized >= max;
+        onChange(normalized);
+      };
+      minus.addEventListener("click", () => apply(Number(input.value) - 1));
+      plus.addEventListener("click", () => apply(Number(input.value) + 1));
+      input.addEventListener("change", () => apply(input.value));
+      minus.disabled = value <= min;
+      plus.disabled = value >= max;
+      return wrap;
+    };
+    field("边框粗细", stepperControl(style.borderWidth ?? 1, 0, 6, value => controller.updateSelectedNodeStyles({ borderWidth: value }), "px"));
+    field("字号", stepperControl(style.fontSize || 13, 10, 24, value => controller.updateSelectedNodeStyles({ fontSize: value }), "px"));
+
+    const weight = styleSection.createEl("select");
+    for (const [value, label] of [["400", "常规"], ["500", "中等"], ["600", "半粗"], ["700", "粗体"]]) weight.createEl("option", { value, text: label });
+    weight.value = String(style.fontWeight || 500);
+    weight.addEventListener("change", () => controller.updateSelectedNodeStyles({ fontWeight: Number(weight.value) }));
+    field("字重", weight);
+
+    const align = styleSection.createEl("select");
+    for (const [value, label] of [["left", "左对齐"], ["center", "居中"], ["right", "右对齐"]]) align.createEl("option", { value, text: label });
+    align.value = style.align || "center";
+    align.addEventListener("change", () => controller.updateSelectedNodeStyles({ align: align.value }));
+    field("对齐", align);
+
+    const reset = styleSection.createEl("button", { cls: "crisp-mind-inspector-reset", text: "重置全部样式" });
+    reset.addEventListener("click", () => {
+      controller.updateSelectedNodeStyles({
+        shape: null, fill: null, textColor: null, borderColor: null,
+        borderWidth: null, fontSize: null, fontWeight: null, align: null
+      });
+      this.renderInspector();
+    });
+
+    const noteSection = this.inspectorEl.createDiv({ cls: "crisp-mind-inspector-section" });
+    noteSection.createDiv({ cls: "crisp-mind-inspector-title", text: "节点备注" });
+    if (selected.length === 1) {
+      const note = noteSection.createEl("textarea", {
+        cls: "crisp-mind-inspector-note",
+        attr: { placeholder: "补充背景、判断依据或后续动作…", "aria-label": "节点备注" }
+      });
+      note.value = primary.data?.note || "";
+      note.addEventListener("change", () => controller.updateSelectedNodeNote(note.value));
+    } else {
+      noteSection.createDiv({ cls: "crisp-mind-inspector-hint", text: "备注仅支持单节点编辑。" });
+    }
+
+    const annotationSection = this.inspectorEl.createDiv({ cls: "crisp-mind-inspector-section" });
+    annotationSection.createDiv({ cls: "crisp-mind-inspector-title", text: "结构与标注" });
+    const actions = annotationSection.createDiv({ cls: "crisp-mind-inspector-actions" });
+    const boundary = (controller.docData.boundaries || []).find(item => item.nodeId === primary.id);
+    const boundaryButton = actions.createEl("button", { text: boundary ? "编辑边界标签" : "添加边界" });
+    boundaryButton.addEventListener("click", () => this.promptBoundary(primary, boundary));
+    if (boundary) {
+      const removeBoundary = actions.createEl("button", { cls: "is-danger", text: "移除边界" });
+      removeBoundary.addEventListener("click", () => controller.removeBoundary(primary.id));
+    }
+    const summary = (controller.docData.summaries || []).find(item => item.nodeId === primary.id);
+    const summaryButton = actions.createEl("button", { text: summary ? "编辑概要标签" : "添加概要" });
+    summaryButton.addEventListener("click", () => this.promptSummary(primary, summary));
+    if (summary) {
+      const removeSummary = actions.createEl("button", { cls: "is-danger", text: "移除概要" });
+      removeSummary.addEventListener("click", () => controller.removeSummary(primary.id));
+    }
+    if (selected.length === 2) {
+      const relationButton = actions.createEl("button", { cls: "mod-cta", text: "建立关系" });
+      relationButton.addEventListener("click", () => this.promptRelation(selected));
+    } else if (selected.length > 2) {
+      annotationSection.createDiv({ cls: "crisp-mind-inspector-hint", text: "建立关系请只选择两个节点。" });
+    }
+  }
+
+  makeFloatingPanelDraggable(panel, header) {
+    header.classList.add("is-draggable");
+    header.setAttribute("title", "拖动标题栏移动面板");
+    header.addEventListener("pointerdown", event => {
+      if (event.button !== 0 || event.target.closest("button, input, select, textarea, a")) return;
+      const ownerWindow = this.contentEl.ownerDocument.defaultView || window;
+      const containerRect = this.canvasController.container.getBoundingClientRect();
+      const panelRect = panel.getBoundingClientRect();
+      const offsetX = event.clientX - panelRect.left;
+      const offsetY = event.clientY - panelRect.top;
+      panel.classList.add("is-dragging");
+      panel.style.right = "auto";
+      panel.style.bottom = "auto";
+      panel.style.left = `${panelRect.left - containerRect.left}px`;
+      panel.style.top = `${panelRect.top - containerRect.top}px`;
+
+      const move = moveEvent => {
+        const maxLeft = Math.max(8, containerRect.width - panelRect.width - 8);
+        const maxTop = Math.max(8, containerRect.height - Math.min(panelRect.height, containerRect.height) - 8);
+        const left = Math.max(8, Math.min(maxLeft, moveEvent.clientX - containerRect.left - offsetX));
+        const top = Math.max(8, Math.min(maxTop, moveEvent.clientY - containerRect.top - offsetY));
+        panel.style.left = `${left}px`;
+        panel.style.top = `${top}px`;
+      };
+      const stop = () => {
+        ownerWindow.removeEventListener("pointermove", move);
+        ownerWindow.removeEventListener("pointerup", stop);
+        ownerWindow.removeEventListener("pointercancel", stop);
+        panel.classList.remove("is-dragging");
+      };
+      ownerWindow.addEventListener("pointermove", move);
+      ownerWindow.addEventListener("pointerup", stop);
+      ownerWindow.addEventListener("pointercancel", stop);
+      event.preventDefault();
+    });
+  }
+
+  promptBoundary(node, existing = null) {
+    new CrispMindPromptModal(this.app, {
+      title: existing ? "编辑边界" : "添加边界",
+      value: existing?.label || "",
+      placeholder: "边界名称，可留空",
+      onSubmit: label => this.canvasController.setBoundary(node.id, label)
+    }).open();
+  }
+
+  promptSummary(node, existing = null) {
+    new CrispMindPromptModal(this.app, {
+      title: existing ? "编辑概要" : "添加概要",
+      value: existing?.label || "",
+      placeholder: node.data?.text || "概要",
+      onSubmit: label => this.canvasController.setSummary(node.id, label || node.data?.text || "概要")
+    }).open();
+  }
+
+  promptRelation(nodes) {
+    const from = nodes[0], to = nodes[1];
+    const existing = (this.canvasController.docData.relations || []).find(relation =>
+      (relation.from === from.id && relation.to === to.id) || (relation.from === to.id && relation.to === from.id)
+    );
+    new CrispMindPromptModal(this.app, {
+      title: existing ? "编辑关系标签" : "建立关系",
+      value: existing?.label || "",
+      placeholder: "关系说明，可留空",
+      onSubmit: label => this.canvasController.addRelation(from.id, to.id, label)
+    }).open();
+  }
+
+  showRelationMenu(relation, event) {
+    const menu = new Menu();
+    menu.addItem(item => item.setTitle("编辑关系标签").setIcon("pencil").onClick(() => {
+      new CrispMindPromptModal(this.app, {
+        title: "编辑关系标签",
+        value: relation.label || "",
+        placeholder: "关系说明",
+        onSubmit: label => this.canvasController.addRelation(relation.from, relation.to, label, relation.color)
+      }).open();
+    }));
+    menu.addItem(item => item.setTitle("删除关系").setIcon("trash-2").onClick(() => this.canvasController.removeRelation(relation.id)));
+    menu.showAtMouseEvent(event);
+  }
+
+  showSummaryMenu(summary, event) {
+    const node = this.canvasController.findNode(summary.nodeId);
+    const menu = new Menu();
+    menu.addItem(item => item.setTitle("编辑概要标签").setIcon("pencil").onClick(() => node && this.promptSummary(node, summary)));
+    menu.addItem(item => item.setTitle("删除概要").setIcon("trash-2").onClick(() => this.canvasController.removeSummary(summary.nodeId)));
+    menu.showAtMouseEvent(event);
   }
 
   showInteractionHelp() {
@@ -2064,6 +3490,12 @@ class CrispMindEditView extends TextFileView {
       ["复制 / 剪切 / 粘贴分支", "⌘ / Ctrl + C、X、V"],
       ["撤销 / 重做", "⌘ / Ctrl + Z、Shift + Z"],
       ["调整层级与顺序", "拖到节点中部成为子主题；上部 / 下部插入同级"],
+      ["多选节点", "⌘ / Ctrl + 点击切换；Shift + 点击选择可见范围"],
+      ["节点样式与备注", "工具栏检查器，或右键节点后选择"],
+      ["大纲侧栏", "工具栏大纲按钮；可切换显示层级；点击节点定位，点击箭头折叠"],
+      ["关系 / 边界 / 概要", "选中两个节点建立关系；右键节点添加边界或概要"],
+      ["搜索并聚焦分支", "工具栏搜索；聚焦后从顶部返回全图"],
+      ["播放导图演示", "工具栏演示；左右方向键切换，Esc 退出"],
       ["平移画布", "滚动或拖拽空白处"],
       ["缩放画布", "触控板捏合或 ⌘ / Ctrl + 滚动"],
       ["取消编辑或拖拽", "Esc"]
@@ -2099,7 +3531,8 @@ class CrispMindEditView extends TextFileView {
 
     // Delete Node (Del)
     this.createToolbarButton("trash-2", "删除节点 (Del)", () => {
-      this.canvasController.deleteNode();
+      if (this.canvasController.selectedNodeIds.size > 1) this.canvasController.deleteSelectedNodes();
+      else this.canvasController.deleteNode();
     });
 
     this.createToolbarDivider();
@@ -2125,7 +3558,34 @@ class CrispMindEditView extends TextFileView {
       menu.addItem((i) => i.setTitle("Crisp Nord (极光深暗)").onClick(() => this.canvasController.setTheme("crisp-nord")));
       menu.addItem((i) => i.setTitle("Crisp Mono Editorial (当代编辑)").onClick(() => this.canvasController.setTheme("crisp-mono")));
       menu.addItem((i) => i.setTitle("Crisp Amber (温暖羊皮纸)").onClick(() => this.canvasController.setTheme("crisp-amber")));
+      menu.addItem((i) => i.setTitle("Crisp Paper (纸感画布)").onClick(() => this.canvasController.setTheme("crisp-paper")));
       menu.showAtMouseEvent(e);
+    });
+
+    this.createToolbarDivider();
+
+    this.createToolbarButton("search", "搜索节点并聚焦分支", () => {
+      if (this.canvasController.presentationActive) this.canvasController.stopPresentation();
+      new CrispMindSearchModal(this.app, this).open();
+    });
+
+    this.createToolbarButton("presentation", "导图演示模式", () => {
+      if (this.canvasController.presentationActive) this.canvasController.stopPresentation();
+      new CrispMindPresentationModal(this.app, this).open();
+    });
+
+    this.createToolbarButton("list-tree", "大纲侧栏", () => {
+      const panel = this.outlinePanelEl;
+      panel.style.display = panel.style.display === "none" ? "flex" : "none";
+      if (panel.style.display !== "none") {
+        this.renderOutline();
+        this.outlineFilterEl?.focus();
+      }
+    });
+
+    this.createToolbarButton("panel-right", "节点样式与备注", () => {
+      if (this.inspectorOpen) this.closeInspector();
+      else this.openInspector();
     });
 
     this.createToolbarDivider();
@@ -2167,17 +3627,30 @@ class CrispMindEditView extends TextFileView {
 
   showNodeMenu(node, event) {
     if (this.readOnly) return;
-    const c = this.canvasController; c.selectedNodeId = node.id;
+    const c = this.canvasController;
+    if (!c.selectedNodeIds.has(node.id)) {
+      c.setSelectionState([node.id], node.id);
+      c.render();
+      this.handleSelectionChange();
+    }
     const menu = new Menu();
     menu.addItem(i => i.setTitle("编辑文本").setIcon("pencil").onClick(() => c.editNodeText(c.findNode(node.id))));
+    menu.addItem(i => i.setTitle("节点样式与备注").setIcon("sliders-horizontal").onClick(() => {
+      this.openInspector();
+    }));
     menu.addItem(i => i.setTitle("添加子主题 · Tab").setIcon("plus").onClick(() => c.addChildNode(node.id)));
-    menu.addItem(i => i.setTitle("添加同级主题 · Enter").onClick(() => c.addSiblingNode(node.id)));
-    if (node.children?.length) menu.addItem(i => i.setTitle(node.data.collapsed ? "展开分支 · F" : "折叠分支 · F").onClick(() => c.toggleCollapse(node.id)));
+    menu.addItem(i => i.setTitle("添加同级主题 · Enter").setIcon("list-plus").onClick(() => c.addSiblingNode(node.id)));
+    if (node.children?.length) menu.addItem(i => i.setTitle(node.data.collapsed ? "展开分支 · F" : "折叠分支 · F").setIcon(node.data.collapsed ? "chevrons-up-down" : "chevrons-down-up").onClick(() => c.toggleCollapse(node.id)));
+    const boundary = (c.docData.boundaries || []).find(item => item.nodeId === node.id);
+    const summary = (c.docData.summaries || []).find(item => item.nodeId === node.id);
+    menu.addItem(i => i.setTitle(boundary ? "编辑边界" : "添加边界").setIcon("box-select").onClick(() => this.promptBoundary(node, boundary)));
+    menu.addItem(i => i.setTitle(summary ? "编辑概要" : "添加概要").setIcon("panel-top-dashed").onClick(() => this.promptSummary(node, summary)));
+    if (c.selectedNodeIds.size === 2) menu.addItem(i => i.setTitle("为选中节点建立关系").setIcon("git-branch").onClick(() => this.promptRelation(c.selectedNodes())));
     menu.addItem(i => i.setTitle("设置 / 更换笔记链接").setIcon("link").onClick(() => this.editNodeLink(node.id)));
     menu.addSeparator();
-    menu.addItem(i => i.setTitle("复制分支 · ⌘C").onClick(() => { void c.clipboardAction("copy"); }));
-    if (node.id !== c.docData.root.id) menu.addItem(i => i.setTitle("剪切分支 · ⌘X").onClick(() => { void c.clipboardAction("cut"); }));
-    menu.addItem(i => i.setTitle("粘贴为子主题 · ⌘V").onClick(() => { void c.clipboardAction("paste"); }));
+    menu.addItem(i => i.setTitle("复制分支 · ⌘C").setIcon("copy").onClick(() => { void c.clipboardAction("copy"); }));
+    if (node.id !== c.docData.root.id) menu.addItem(i => i.setTitle("剪切分支 · ⌘X").setIcon("scissors").onClick(() => { void c.clipboardAction("cut"); }));
+    menu.addItem(i => i.setTitle("粘贴为子主题 · ⌘V").setIcon("clipboard-paste").onClick(() => { void c.clipboardAction("paste"); }));
     menu.addSeparator();
     if (node.id !== c.docData.root.id) menu.addItem(i => i.setTitle("删除分支 · 可撤销").setIcon("trash-2").onClick(() => c.deleteNode(node.id)));
     menu.showAtMouseEvent(event);
@@ -2376,7 +3849,7 @@ class CrispMindExporter {
   }
 
   getBoundingBox(padding = 40) {
-    const root = this.controller?.docData?.root;
+    const root = this.controller?.layoutRoot?.() || this.controller?.docData?.root;
     if (!root) return { minX: 0, minY: 0, maxX: 800, maxY: 600, width: 880, height: 680, viewBox: "-40 -40 880 680", padding };
 
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -2388,7 +3861,7 @@ class CrispMindExporter {
         maxX = Math.max(maxX, node._x + (node._w || 120));
         maxY = Math.max(maxY, node._y + (node._h || 40));
       }
-      if (!node.data?.collapsed && node.children) {
+      if ((!node.data?.collapsed || node.id === this.controller?.branchFocusId) && node.children) {
         node.children.forEach(walk);
       }
     };
@@ -2406,6 +3879,23 @@ class CrispMindExporter {
       maxY = Math.max(maxY, this.controller._fishboneAxis.y + 20);
     }
 
+    for (const group of [
+      this.controller?.boundaryGroup,
+      this.controller?.relationsGroup,
+      this.controller?.annotationsGroup
+    ]) {
+      if (typeof group?.getBBox !== "function") continue;
+      try {
+        const box = group.getBBox();
+        if (Number.isFinite(box.x) && box.width > 0 && box.height > 0) {
+          minX = Math.min(minX, box.x);
+          minY = Math.min(minY, box.y);
+          maxX = Math.max(maxX, box.x + box.width);
+          maxY = Math.max(maxY, box.y + box.height);
+        }
+      } catch (_) {}
+    }
+
     if (!isFinite(minX)) {
       minX = 0; minY = 0; maxX = 800; maxY = 600;
     }
@@ -2420,16 +3910,26 @@ class CrispMindExporter {
     const bbox = this.getBoundingBox(padding);
     const theme = this.controller?.theme || {};
 
+    const boundariesHtml = this.controller?.boundaryGroup?.innerHTML || "";
     const linesHtml = this.controller?.linesGroup?.innerHTML || "";
+    const relationsHtml = this.controller?.relationsGroup?.innerHTML || "";
     const nodesHtml = this.controller?.nodesGroup?.innerHTML || "";
+    const annotationsHtml = this.controller?.annotationsGroup?.innerHTML || "";
 
+    const patternDefs = !transparent && theme.paperPattern
+      ? `<pattern id="crisp-paper-grid" width="20" height="20" patternUnits="userSpaceOnUse"><circle cx="1.25" cy="1.25" r="0.85" fill="${theme.patternColor || 'rgba(0,0,0,0.08)'}" /></pattern>`
+      : "";
     const bgRect = transparent
       ? ""
-      : `<rect x="${bbox.minX - bbox.padding}" y="${bbox.minY - bbox.padding}" width="${bbox.width}" height="${bbox.height}" fill="${theme.backgroundColor || '#1e1e2e'}" />`;
+      : `<rect x="${bbox.minX - bbox.padding}" y="${bbox.minY - bbox.padding}" width="${bbox.width}" height="${bbox.height}" fill="${theme.backgroundColor || '#1e1e2e'}" />`
+        + (patternDefs
+          ? `<rect x="${bbox.minX - bbox.padding}" y="${bbox.minY - bbox.padding}" width="${bbox.width}" height="${bbox.height}" fill="url(#crisp-paper-grid)" />`
+          : "");
 
     const svgString = `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="${bbox.viewBox}" width="${bbox.width}" height="${bbox.height}">
   <defs>
+    ${patternDefs}
     <style>
       text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
       .crisp-mind-node-label { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
@@ -2437,8 +3937,11 @@ class CrispMindExporter {
     </style>
   </defs>
   ${bgRect}
+  <g class="crisp-mind-export-boundaries">${boundariesHtml}</g>
   <g class="crisp-mind-export-lines">${linesHtml}</g>
+  <g class="crisp-mind-export-relations">${relationsHtml}</g>
   <g class="crisp-mind-export-nodes">${nodesHtml}</g>
+  <g class="crisp-mind-export-annotations">${annotationsHtml}</g>
 </svg>`;
 
     return {
@@ -2709,6 +4212,234 @@ class CrispMindExportModal extends Modal {
 }
 
 /* ==========================================================================
+   Search, Branch Focus & Presentation UI
+   ========================================================================== */
+
+class CrispMindPromptModal extends Modal {
+  constructor(app, options = {}) {
+    super(app);
+    this.options = options;
+    this.inputEl = null;
+  }
+
+  onOpen() {
+    this.contentEl.empty();
+    this.contentEl.addClass("crisp-mind-prompt-modal");
+    this.contentEl.createEl("h3", { text: this.options.title || "输入内容", cls: "crisp-mind-modal__title" });
+    this.inputEl = this.contentEl.createEl("input", {
+      cls: "crisp-mind-prompt-input",
+      attr: { type: "text", placeholder: this.options.placeholder || "", "aria-label": this.options.title || "输入内容" }
+    });
+    this.inputEl.value = this.options.value || "";
+    const actions = this.contentEl.createDiv({ cls: "crisp-mind-modal__actions" });
+    const cancel = actions.createEl("button", { text: "取消" });
+    cancel.addEventListener("click", () => this.close());
+    const confirm = actions.createEl("button", { cls: "mod-cta", text: "确定" });
+    confirm.addEventListener("click", () => {
+      const value = this.inputEl.value.trim();
+      this.close();
+      this.options.onSubmit?.(value);
+    });
+    this.inputEl.addEventListener("keydown", event => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        confirm.click();
+      }
+    });
+    window.setTimeout(() => {
+      this.inputEl?.focus();
+      this.inputEl?.select();
+    }, 0);
+  }
+
+  onClose() {
+    this.contentEl.empty();
+  }
+}
+
+class CrispMindSearchModal extends Modal {
+  constructor(app, view) {
+    super(app);
+    this.view = view;
+    this.inputEl = null;
+    this.resultsEl = null;
+    this.statusEl = null;
+  }
+
+  onOpen() {
+    this.contentEl.empty();
+    this.contentEl.addClass("crisp-mind-search-modal");
+    this.contentEl.createEl("h3", { text: "搜索节点", cls: "crisp-mind-modal__title" });
+    this.contentEl.createEl("p", {
+      cls: "crisp-mind-modal__desc",
+      text: "查找节点并聚焦所在分支。聚焦只改变当前视图，不修改原来的折叠结构。"
+    });
+
+    this.inputEl = this.contentEl.createEl("input", {
+      cls: "crisp-mind-search-input",
+      attr: { type: "search", placeholder: "输入节点文字…", "aria-label": "搜索节点文字" }
+    });
+    this.statusEl = this.contentEl.createDiv({ cls: "crisp-mind-search-status" });
+    this.resultsEl = this.contentEl.createDiv({ cls: "crisp-mind-search-results" });
+
+    this.inputEl.addEventListener("input", () => this.updateResults());
+    this.inputEl.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        const first = this.resultsEl.querySelector(".crisp-mind-search-result");
+        if (first) {
+          event.preventDefault();
+          first.click();
+        }
+      }
+    });
+    this.updateResults();
+    window.setTimeout(() => this.inputEl?.focus(), 0);
+  }
+
+  updateResults() {
+    const query = this.inputEl?.value || "";
+    const controller = this.view.canvasController;
+    const results = searchMindNodes(controller.docData.root, query, controller.options.vaultName);
+    this.resultsEl.empty();
+
+    if (!query.trim()) {
+      this.statusEl.textContent = "输入关键词后显示匹配节点与所属路径。";
+      return;
+    }
+    this.statusEl.textContent = results.length ? `找到 ${results.length} 个节点` : "没有找到匹配节点";
+    if (!results.length) return;
+
+    for (const result of results) {
+      const button = this.resultsEl.createEl("button", {
+        cls: "crisp-mind-search-result",
+        attr: { type: "button", "aria-label": `聚焦 ${result.text}` }
+      });
+      button.createDiv({ cls: "crisp-mind-search-result__text", text: result.text });
+      button.createDiv({
+        cls: "crisp-mind-search-result__path",
+        text: result.path.slice(0, -1).join("  /  ") || "中心主题"
+      });
+      button.addEventListener("click", () => {
+        this.close();
+        controller.setBranchFocus(result.id);
+      });
+    }
+  }
+
+  onClose() {
+    this.contentEl.empty();
+  }
+}
+
+class CrispMindPresentationModal extends Modal {
+  constructor(app, view) {
+    super(app);
+    this.view = view;
+    this.steps = [];
+    this.listEl = null;
+  }
+
+  onOpen() {
+    this.steps = this.view.canvasController.getPresentationSteps();
+    this.contentEl.addClass("crisp-mind-presentation-modal");
+    this.render();
+  }
+
+  commit() {
+    this.view.canvasController.setPresentationSteps(this.steps);
+    this.steps = this.view.canvasController.getPresentationSteps();
+  }
+
+  render() {
+    this.contentEl.empty();
+    this.contentEl.createEl("h3", { text: "导图演示", cls: "crisp-mind-modal__title" });
+    this.contentEl.createEl("p", {
+      cls: "crisp-mind-modal__desc",
+      text: "选择节点并安排讲解顺序。每一步的备注只在这里显示，播放时不会出现在画布上。"
+    });
+
+    const addRow = this.contentEl.createDiv({ cls: "crisp-mind-presentation-toolbar" });
+    const addButton = addRow.createEl("button", { cls: "mod-cta", text: "添加当前节点" });
+    addButton.disabled = this.view.readOnly || !this.view.canvasController.selectedNodeId;
+    addButton.addEventListener("click", () => {
+      const controller = this.view.canvasController;
+      const nodeId = controller.selectedNodeId || controller.docData.root.id;
+      if (!controller.findNode(nodeId)) return;
+      this.steps.push({ nodeId, note: "" });
+      this.commit();
+      this.render();
+    });
+
+    const playButton = addRow.createEl("button", { text: "播放演示" });
+    playButton.disabled = this.steps.length === 0;
+    playButton.addEventListener("click", () => {
+      this.commit();
+      this.close();
+      if (!this.view.canvasController.startPresentation()) {
+        new Notice("请先添加至少一个演示节点");
+      }
+    });
+
+    this.listEl = this.contentEl.createDiv({ cls: "crisp-mind-presentation-list" });
+    if (!this.steps.length) {
+      this.listEl.createDiv({
+        cls: "crisp-mind-presentation-empty",
+        text: "先在画布上选中节点，再添加为演示步骤。"
+      });
+      return;
+    }
+
+    this.steps.forEach((step, index) => {
+      const node = this.view.canvasController.findNode(step.nodeId);
+      if (!node) return;
+      const row = this.listEl.createDiv({ cls: "crisp-mind-presentation-step" });
+      const order = row.createDiv({ cls: "crisp-mind-presentation-order", text: String(index + 1).padStart(2, "0") });
+      const body = row.createDiv({ cls: "crisp-mind-presentation-body" });
+      body.createDiv({
+        cls: "crisp-mind-presentation-node",
+        text: mindNodeLink(node.data?.text || "", this.view.canvasController.options.vaultName)?.display || node.data?.text || "Topic"
+      });
+      const note = body.createEl("textarea", {
+        cls: "crisp-mind-presentation-note",
+        attr: { placeholder: "讲解备注（仅编排界面可见）", "aria-label": `第 ${index + 1} 步备注` }
+      });
+      note.value = step.note || "";
+      note.addEventListener("change", () => {
+        this.steps[index].note = note.value.slice(0, 5000);
+        this.commit();
+      });
+
+      const controls = row.createDiv({ cls: "crisp-mind-presentation-controls" });
+      const move = (offset, icon, label, disabled) => {
+        const button = controls.createEl("button", { cls: "crisp-mind-presentation-control", attr: { "aria-label": label, title: label } });
+        setIcon(button, icon);
+        button.disabled = disabled;
+        button.addEventListener("click", () => {
+          const next = index + offset;
+          if (next < 0 || next >= this.steps.length) return;
+          [this.steps[index], this.steps[next]] = [this.steps[next], this.steps[index]];
+          this.commit();
+          this.render();
+        });
+      };
+      move(-1, "arrow-up", "上移", index === 0);
+      move(1, "arrow-down", "下移", index === this.steps.length - 1);
+      const remove = controls.createEl("button", { cls: "crisp-mind-presentation-control is-danger", attr: { "aria-label": "移除步骤", title: "移除步骤" } });
+      setIcon(remove, "x");
+      remove.addEventListener("click", () => {
+        this.steps.splice(index, 1);
+        this.commit();
+        this.render();
+      });
+    });
+  }
+
+  onClose() {
+    this.contentEl.empty();
+  }
+}
+
+/* ==========================================================================
    Crisp Mind Plugin Main
    ========================================================================== */
 
@@ -2825,7 +4556,7 @@ class CrispMindPlugin extends Plugin {
       title: "中心主题",
       frontmatter: "crisp-mind: true\n",
       data: {
-        version: "1.0",
+        version: "1.1",
         layout: this.settings.defaultLayout,
         theme: this.settings.defaultTheme,
         root: defaultRoot
@@ -2994,6 +4725,7 @@ class CrispMindSettingTab extends PluginSettingTab {
           .addOption("crisp-nord", "Crisp Nord (极光深暗)")
           .addOption("crisp-mono", "Crisp Mono Editorial (当代编辑单色排版)")
           .addOption("crisp-amber", "Crisp Amber (温暖羊皮纸)")
+          .addOption("crisp-paper", "Crisp Paper (纸感画布)")
           .setValue(this.plugin.settings.defaultTheme)
           .onChange(async (val) => {
             this.plugin.settings.defaultTheme = val;

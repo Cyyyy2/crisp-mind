@@ -118,7 +118,7 @@ function setupTestContext(publicKeyPem) {
     source = source.replace(/-----BEGIN PUBLIC KEY-----[\s\S]*?-----END PUBLIC KEY-----/, publicKeyPem.trim());
   }
   const code = source +
-    "\nmodule.exports.helpers = { inlineEditorFrame, normalizeMindLinkText, mindNodeLink, inspectMindSource, CrispMindCanvas, CrispMindEditView, parseMindMarkdown, assembleMindMarkdown, markdownOutlineToTree, treeToMarkdownOutline, validateAndRepairTree, extractNodeToTopicContent, getComputedThemeConfig, verifyLicenseCode, discoverVaultCrispLicense, collectVaultCrispLicenseCandidates, CrispMindLicenseManager, renderAboutCard, CrispMindExporter };";
+    "\nmodule.exports.helpers = { inlineEditorFrame, normalizeMindLinkText, mindNodeLink, inspectMindSource, searchMindNodes, normalizePresentationSteps, normalizeNodeStyle, normalizeMindAnnotations, CrispMindCanvas, CrispMindEditView, parseMindMarkdown, assembleMindMarkdown, markdownOutlineToTree, treeToMarkdownOutline, validateAndRepairTree, extractNodeToTopicContent, getComputedThemeConfig, verifyLicenseCode, discoverVaultCrispLicense, collectVaultCrispLicenseCandidates, CrispMindLicenseManager, renderAboutCard, CrispMindExporter };";
 
   vm.runInNewContext(code, context);
   return context.module.exports;
@@ -269,6 +269,41 @@ test("6. Obsidian Theme Adapter produces valid palette", () => {
   assert.equal(palette.textColor, "#cdd6f4");
 });
 
+test("7. Crisp Paper palette is editorial in light and dark rooms", () => {
+  const { helpers } = setupTestContext();
+  const paper = helpers.getComputedThemeConfig("crisp-paper");
+  assert.equal(paper.name, "crisp-paper");
+  assert.equal(paper.paperPattern, true);
+  assert.match(paper.backgroundColor, /^#/);
+  assert.match(paper.lineColor, /^#/);
+});
+
+test("8. Node search returns the matching branch path in document order", () => {
+  const { helpers } = setupTestContext();
+  const doc = helpers.parseMindMarkdown("# Root\n- Product\n  - ASIN Lookup\n  - Inventory\n- Workflow\n  - ASIN Review");
+  const results = helpers.searchMindNodes(doc.data.root, "asin");
+  assert.equal(results.length, 2);
+  assert.equal(results[0].text, "ASIN Lookup");
+  assert.deepEqual(Array.from(results[0].path), ["Root", "Product", "ASIN Lookup"]);
+  assert.equal(results[1].text, "ASIN Review");
+  assert.deepEqual(Array.from(results[1].path), ["Root", "Workflow", "ASIN Review"]);
+});
+
+test("9. Presentation steps retain valid notes, drop duplicates, and ignore deleted nodes", () => {
+  const { helpers } = setupTestContext();
+  const doc = helpers.parseMindMarkdown("# Root\n- One\n- Two");
+  const [one, two] = doc.data.root.children;
+  const steps = helpers.normalizePresentationSteps([
+    { nodeId: one.id, note: "First point" },
+    { nodeId: one.id, note: "Duplicate" },
+    { nodeId: "missing", note: "Ignore" },
+    { nodeId: two.id, note: "Second point" }
+  ], doc.data.root);
+  assert.deepEqual(Array.from(steps, step => step.nodeId), [one.id, two.id]);
+  assert.equal(steps[0].note, "First point");
+  assert.equal(steps[1].note, "Second point");
+});
+
 function canvasFixture() {
   const { helpers } = setupTestContext();
   const C = helpers.CrispMindCanvas;
@@ -360,6 +395,155 @@ test("unchanged history is deduplicated and contains no geometry", () => {
   const {canvas} = canvasFixture(); canvas.calculateLayout(); canvas.saveState();
   assert.equal(canvas.history.length, 1);
   assert.ok(!JSON.stringify(canvas.history).includes('"_x"'));
+});
+test("branch focus changes only the viewport and never rewrites collapse state", () => {
+  const { canvas, changes } = canvasFixture();
+  const parent = canvas.docData.root.children[0];
+  parent.data.collapsed = true;
+  const savesBefore = changes();
+  canvas.setBranchFocus(parent.id);
+  assert.equal(canvas.branchFocusId, parent.id);
+  assert.deepEqual(Array.from(canvas.visibleNodes(), node => node.id), [parent.id, parent.children[0].id]);
+  assert.equal(parent.data.collapsed, true);
+  assert.equal(changes(), savesBefore);
+  canvas.clearBranchFocus();
+  assert.equal(canvas.branchFocusId, null);
+  assert.ok(!canvas.visibleNodes().some(node => node.id === parent.children[0].id));
+});
+test("presentation order persists in .mind.md and survives undo or redo", () => {
+  const { canvas, helpers } = canvasFixture();
+  const [one, two] = canvas.docData.root.children;
+  canvas.setPresentationSteps([
+    { nodeId: one.id, note: "Say one" },
+    { nodeId: two.id, note: "Say two" }
+  ]);
+  const saved = helpers.assembleMindMarkdown({ data: canvas.docData });
+  assert.ok(saved.includes('"presentation"'));
+  assert.ok(saved.includes('"note": "Say one"'));
+  assert.ok(saved.includes(`"nodeId": "${one.id}"`));
+  canvas.undo();
+  assert.equal(canvas.docData.presentation, undefined);
+  canvas.redo();
+  assert.equal(canvas.docData.presentation.steps.length, 2);
+});
+test("presentation navigation stays inside saved steps and exits cleanly", () => {
+  const { canvas } = canvasFixture();
+  const [one, two] = canvas.docData.root.children;
+  canvas.setPresentationSteps([{ nodeId: one.id, note: "" }, { nodeId: two.id, note: "" }]);
+  assert.equal(canvas.startPresentation(), true);
+  assert.equal(canvas.presentationIndex, 0);
+  canvas.goToPresentationStep(1);
+  assert.equal(canvas.selectedNodeId, two.id);
+  canvas.goToPresentationStep(99);
+  assert.equal(canvas.presentationIndex, 1);
+  canvas.stopPresentation();
+  assert.equal(canvas.presentationActive, false);
+});
+test("node notes and styles are normalized, editable, and serialized", () => {
+  const { canvas, helpers } = canvasFixture();
+  const node = canvas.docData.root.children[0];
+  canvas.selectNode(node.id);
+  canvas.updateSelectedNodeStyles({
+    shape: "pill",
+    fill: "#AABBCC",
+    textColor: "#112233",
+    borderColor: "#445566",
+    borderWidth: 4,
+    fontSize: 16,
+    fontWeight: 600,
+    align: "left"
+  });
+  canvas.updateSelectedNodeNote("这是一条需要保留的背景说明");
+  assert.equal(node.data.style.shape, "pill");
+  assert.equal(node.data.style.fill, "#aabbcc");
+  assert.equal(node.data.style.borderWidth, 4);
+  assert.equal(node.data.note, "这是一条需要保留的背景说明");
+  const text = helpers.assembleMindMarkdown({ data: canvas.docData });
+  assert.ok(text.includes('"note": "这是一条需要保留的背景说明"'));
+  assert.ok(text.includes('"shape": "pill"'));
+  const parsed = helpers.parseMindMarkdown(text);
+  assert.equal(parsed.data.root.children[0].data.style.fontSize, 16);
+  assert.equal(parsed.data.root.children[0].data.note, "这是一条需要保留的背景说明");
+});
+test("relations, boundaries, and summaries keep valid node references only", () => {
+  const { helpers } = setupTestContext();
+  const doc = helpers.parseMindMarkdown("# Root\n- One\n- Two");
+  const [one, two] = doc.data.root.children;
+  doc.data.relations = [
+    { id: "r1", from: one.id, to: two.id, label: "depends on", color: "#AABBCC" },
+    { id: "r2", from: one.id, to: "missing", label: "drop" }
+  ];
+  doc.data.boundaries = [{ id: "b1", nodeId: one.id, label: "核心边界" }];
+  doc.data.summaries = [{ id: "s1", nodeId: two.id, label: "阶段总结" }];
+  helpers.validateAndRepairTree(doc.data);
+  assert.equal(doc.data.relations.length, 1);
+  assert.equal(doc.data.relations[0].color, "#aabbcc");
+  assert.equal(doc.data.boundaries[0].label, "核心边界");
+  assert.equal(doc.data.summaries[0].nodeId, two.id);
+  const text = helpers.assembleMindMarkdown(doc);
+  assert.ok(text.includes('"relations"'));
+  assert.ok(text.includes('"boundaries"'));
+  assert.ok(text.includes('"summaries"'));
+});
+test("summary bounds cover child branches instead of the selected parent", () => {
+  const { canvas } = canvasFixture();
+  const parent = canvas.docData.root.children[0];
+  canvas.calculateLayout();
+  const bounds = canvas.summaryBounds(parent);
+  assert.ok(bounds, "an expanded parent should have summary bounds");
+  assert.ok(bounds.x > parent._x + parent._w, "summary should start to the right of the parent node");
+  parent.data.collapsed = true;
+  canvas.calculateLayout();
+  assert.equal(canvas.summaryBounds(parent), null, "collapsed children should hide their summary");
+  parent.data.collapsed = false;
+  canvas.calculateLayout();
+  const leaf = canvas.docData.root.children[1];
+  const leafBounds = canvas.summaryBounds(leaf);
+  assert.ok(leafBounds.x <= leaf._x && leafBounds.x + leafBounds.width >= leaf._x + leaf._w);
+});
+test("multi-select supports additive and visible-range selection", () => {
+  const { canvas } = canvasFixture();
+  const [one, two] = canvas.docData.root.children;
+  canvas.selectNode(one.id);
+  canvas.selectNode(two.id, false, { additive: true });
+  assert.deepEqual(Array.from(canvas.selectedNodeIds).sort(), [one.id, two.id].sort());
+  assert.equal(canvas.selectedNodeId, two.id);
+  canvas.selectVisibleRange(canvas.docData.root.id, two.id);
+  assert.equal(canvas.selectedNodeIds.size, 4);
+  canvas.selectNode(one.id, false, { additive: true });
+  assert.equal(canvas.selectedNodeIds.has(one.id), false);
+});
+test("deleting selected branches removes their annotations and duplicate paste keeps style and note", () => {
+  const { canvas, helpers } = canvasFixture();
+  const root = canvas.docData.root;
+  const one = root.children[0];
+  one.data.note = "保留备注";
+  one.data.style = { shape: "rounded", fill: "#abcdef" };
+  canvas.docData.relations = [
+    { id: "r1", from: one.id, to: root.children[1].id, label: "" },
+    { id: "r2", from: root.children[1].id, to: root.children[2].id, label: "" }
+  ];
+  canvas.docData.boundaries = [{ id: "b1", nodeId: one.id, label: "" }];
+  canvas.copyBranchText(one.id);
+  canvas.pasteBranchText(canvas.clipboardBranchSnapshot.text, root.id);
+  const pasted = root.children.at(-1);
+  assert.notEqual(pasted.id, one.id);
+  assert.equal(pasted.data.note, "保留备注");
+  assert.equal(pasted.data.style.fill, "#abcdef");
+  canvas.selectNode(one.id);
+  canvas.deleteNode(one.id);
+  assert.equal(canvas.docData.relations.length, 1);
+  assert.equal(canvas.docData.relations[0].id, "r2");
+  assert.equal(canvas.docData.boundaries, undefined);
+});
+test("batch delete selects the deleted branch's parent instead of falling back to root", () => {
+  const { canvas } = canvasFixture();
+  const parent = canvas.docData.root.children[0];
+  const child = parent.children[0];
+  canvas.selectNode(child.id);
+  assert.equal(canvas.deleteSelectedNodes(), true);
+  assert.equal(canvas.selectedNodeId, parent.id);
+  assert.equal(canvas.findNode(child.id), null);
 });
 test("move rejects cycles and root move, reparent is a single undo step", () => {
   const {canvas} = canvasFixture(); const r=canvas.docData.root,a=r.children[0],b=r.children[1],nested=a.children[0];
@@ -800,6 +984,37 @@ test('45. CrispMindExporter computes accurate BoundingBox and generates standalo
   assert.ok(svgRes.svgString.includes('<svg xmlns="http://www.w3.org/2000/svg"'), 'SVG should have xmlns');
   assert.ok(svgRes.svgString.includes('viewBox='), 'SVG should include viewBox');
   assert.ok(svgRes.svgString.includes('crisp-mind-export-nodes'), 'SVG should wrap nodes');
+});
+
+test('45a. Crisp Paper exports its dot texture with the selected paper background', () => {
+  const { helpers } = setupTestContext();
+  const { canvas } = canvasFixture();
+  canvas.setTheme('crisp-paper');
+  canvas.calculateLayout();
+  const exporter = new helpers.CrispMindExporter({ canvasController: canvas });
+  const svg = exporter.toSvg({ padding: 30, transparent: false }).svgString;
+  assert.ok(svg.includes('id="crisp-paper-grid"'), 'Paper pattern definition should be exported');
+  assert.ok(svg.includes('fill="url(#crisp-paper-grid)"'), 'Paper texture overlay should use the pattern');
+  assert.ok(svg.includes(`fill="${canvas.theme.backgroundColor}"`), 'Export should retain the paper background color');
+});
+
+test('45b. Exporter includes boundaries, relations, and summaries', () => {
+  const { helpers } = setupTestContext();
+  const { canvas } = canvasFixture();
+  canvas.calculateLayout();
+  canvas.boundaryGroup = { innerHTML: '<g data-export="boundary"></g>' };
+  canvas.linesGroup = { innerHTML: '' };
+  canvas.relationsGroup = { innerHTML: '<g data-export="relation"></g>' };
+  canvas.nodesGroup = { innerHTML: '' };
+  canvas.annotationsGroup = { innerHTML: '<g data-export="summary"></g>' };
+  const exporter = new helpers.CrispMindExporter({ canvasController: canvas });
+  const svg = exporter.toSvg().svgString;
+  assert.ok(svg.includes('crisp-mind-export-boundaries'));
+  assert.ok(svg.includes('data-export="boundary"'));
+  assert.ok(svg.includes('crisp-mind-export-relations'));
+  assert.ok(svg.includes('data-export="relation"'));
+  assert.ok(svg.includes('crisp-mind-export-annotations'));
+  assert.ok(svg.includes('data-export="summary"'));
 });
 
 test('46. CrispMindExporter buildPdfBinary outputs standard valid PDF-1.4 binary', () => {

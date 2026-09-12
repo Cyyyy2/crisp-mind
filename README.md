@@ -22,7 +22,12 @@ Part of the **Crisp Series** for Obsidian by [letschips](https://github.com/lets
   - **目录组织图 (Catalog Organization)**: 纵向大纲缩进层级。
   - **时间轴 (Timeline)**: 里程碑节点上下交替错落，直观呈现阶段规划与演进历史。
   - **鱼骨图 / 因果图 (Fishbone / Ishikawa)**: 工业级根因分析图，斜骨与支骨自适应无碰撞布局算法，自带鱼头指示。
-- 🎨 **5 Crisp Curated Palettes**: 内置 `Crisp Obsidian`（跟随当前主题）、`Crisp Cupertino`（灰蓝）、`Crisp Mono Editorial`（当代编辑排版）、`Crisp Nord`（极光深暗）、`Crisp Amber Warm`（羊皮纸暖色）。
+- 🎨 **6 Crisp Curated Palettes**: 内置 `Crisp Obsidian`（跟随当前主题）、`Crisp Cupertino`（灰蓝）、`Crisp Mono Editorial`（当代编辑排版）、`Crisp Nord`（极光深暗）、`Crisp Amber Warm`（羊皮纸暖色）、`Crisp Paper`（纸感画布）。
+- 🔎 **Node Search & Branch Focus**: 按文字搜索节点并显示所属路径；聚焦某个分支时可以只查看相关结构，不影响原始折叠状态，并可从顶部快速返回全图。
+- 🎬 **Presentation Mode**: 将节点保存为讲解顺序，逐步平移、缩放并突出当前节点；每一步支持仅自己可见的备注，播放时用方向键切换、Esc 退出。
+- 🎛️ **Node Style & Notes**: 节点可单独设置形状、填充、文字、边框、字号、字重与对齐；备注随 `.mind.md` 保存，并在画布和大纲显示标记。
+- 🕸️ **Relations, Boundaries & Summaries**: 支持跨分支关系箭头、分支边界和阶段概要，随 SVG、PNG、PDF 导出，删除节点时自动清理失效引用。
+- 🧭 **Multi-Select & Outline Sidebar**: 使用 `⌘ / Ctrl + 点击` 追加选择，`Shift + 点击` 选择可见范围；大纲侧栏与画布选择、折叠和定位保持同步。
 - ⌨️ **Fluid Keyboard-First Workflow**: 全键盘高频流转，`Tab` 插入子主题、`Enter` 插入同级主题、`Space` 就地编辑、`Delete` 删除分支、`Cmd/Ctrl + Z / Shift + Z` 极速撤销与重做。
 - 🏝️ **Floating Pill & Node Island**: 极简悬浮胶囊工具栏（跟随主题底色、圆角描边，无额外模糊层），集成布局、配色、高保真导出与原生操作指南；节点就近浮岛快速添加待办与双链。
 - 📤 **High-Fidelity Multi-Format Export**:
@@ -54,6 +59,12 @@ Part of the **Crisp Series** for Obsidian by [letschips](https://github.com/lets
 | **编辑文本** | 双击节点 或 选中后按 `Space` |
 | **删除节点及子分支** | `Delete` / `Backspace` |
 | **折叠 / 展开分支** | 节点旁的折叠圆标 / 子节点数量圆标，或按 `F` |
+| **搜索 / 聚焦分支** | 点击工具栏搜索图标，输入节点文字后选择结果 |
+| **演示模式** | 点击工具栏演示图标编排步骤；播放时使用方向键切换，`Esc` 退出 |
+| **多选节点** | `Cmd/Ctrl + 点击` 追加或移除；`Shift + 点击` 选择可见范围 |
+| **节点样式与备注** | 选择节点后使用右侧检查器，或右键节点打开 |
+| **大纲侧栏** | 点击工具栏大纲按钮；输入关键词筛选，点击节点定位，点击箭头折叠 |
+| **关系 / 边界 / 概要** | 选中两个节点建立关系；右键节点添加边界或概要 |
 | **撤销 / 重做** | `Cmd/Ctrl + Z` / `Cmd/Ctrl + Shift + Z` |
 | **画布平移与缩放** | 鼠标滚轮平移，`Cmd/Ctrl + 滚轮` 或触控板捏合缩放 |
 | **适应画布居中** | 点击浮动工具栏左端的缩放百分比徽标，或右侧「适应画布」按钮 |
