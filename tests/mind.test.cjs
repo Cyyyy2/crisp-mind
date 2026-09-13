@@ -1211,3 +1211,59 @@ test('editor-scoped hotkeys insert breaks and are disposed on commit and cancel'
     handler();assert.equal(el.value,'One\nTwo');
   }
 });
+
+test('copy between maps preserves hard breaks, notes, styles, and descendants', async () => {
+  const source=canvasFixture().canvas, target=canvasFixture().canvas;
+  const clipboardStore={};let text='';
+  for(const c of [source,target]){c.options.clipboardStore=clipboardStore;c.window={navigator:{clipboard:{async writeText(value){text=value;},async readText(){return text;}}}};}
+  const node=source.docData.root.children[0];
+  node.data.text='First\nSecond';node.data.note='Context';node.data.style={fill:'#abcdef'};
+  source.selectNode(node.id);
+  await source.clipboardAction('copy');
+  target.selectNode(target.docData.root.id);
+  await target.clipboardAction('paste');
+  const pasted=target.docData.root.children.at(-1);
+  assert.equal(pasted.data.text,node.data.text);assert.equal(pasted.data.note,'Context');
+  assert.equal(pasted.data.style.fill,'#abcdef');assert.notEqual(pasted.id,node.id);
+  assert.notEqual(pasted.children[0].id,node.children[0].id);
+  target.undo();assert.equal(target.docData.root.children.length,3);
+  target.redo();assert.equal(target.docData.root.children.at(-1).data.text,'First\nSecond');
+});
+
+test('cut never deletes a branch changed while the clipboard write is pending', async () => {
+  const {canvas}=canvasFixture();const node=canvas.docData.root.children[0];
+  let complete;canvas.window={navigator:{clipboard:{writeText(){return new Promise(r=>complete=r);}}}};
+  canvas.selectNode(node.id);const pending=canvas.clipboardAction('cut');
+  node.data.note='New unsaved context';complete();await pending;
+  assert.ok(canvas.findNode(node.id));assert.equal(node.data.note,'New unsaved context');
+});
+
+test('pending paste does not mutate a destroyed canvas', async () => {
+  const {canvas}=canvasFixture();let complete;
+  canvas.window={navigator:{clipboard:{readText(){return new Promise(r=>complete=r);}}}};
+  canvas.selectNode(canvas.docData.root.id);
+  const pending=canvas.clipboardAction('paste');canvas.destroy();complete('- Late node');await pending;
+  assert.equal(canvas.docData.root.children.length,3);
+});
+
+test('failed clipboard writes do not publish a rich branch to other maps', async () => {
+  const {canvas}=canvasFixture();const clipboardStore={};canvas.options.clipboardStore=clipboardStore;
+  canvas.window={navigator:{clipboard:{async writeText(){throw Error('denied');}}}};
+  canvas.selectNode(canvas.docData.root.children[0].id);await canvas.clipboardAction('copy');
+  assert.equal(clipboardStore.snapshot,undefined);
+});
+
+test('unchanged cut still deletes once and can be undone', async () => {
+  const {canvas}=canvasFixture();const node=canvas.docData.root.children[0];
+  canvas.window={navigator:{clipboard:{async writeText(){}}}};
+  canvas.selectNode(node.id);await canvas.clipboardAction('cut');
+  assert.equal(canvas.findNode(node.id),null);
+  canvas.undo();assert.ok(canvas.findNode(node.id));
+});
+
+test('plain external text remains ordinary outline paste when the rich snapshot differs', () => {
+  const {canvas}=canvasFixture();canvas.options.clipboardStore={snapshot:{text:'- Old',node:{id:'old',data:{text:'Old',note:'Private note'},children:[]}}};
+  canvas.pasteBranchText('- External',canvas.docData.root.id);
+  const pasted=canvas.docData.root.children.at(-1);
+  assert.equal(pasted.data.text,'External');assert.equal(pasted.data.note,undefined);
+});

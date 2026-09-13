@@ -1649,8 +1649,9 @@ class CrispMindCanvas {
   pasteBranchText(text, parentId = this.selectedNodeId || this.docData.root.id) {
     if (typeof text !== "string" || !text.trim() || text.length > 100000) return false;
     const root = {children: []};
-    if (this.clipboardBranchSnapshot?.text === text) {
-      root.children.push(this.cloneBranchWithFreshIds(this.clipboardBranchSnapshot.node));
+    const snapshot = this.options.clipboardStore?.snapshot || this.clipboardBranchSnapshot;
+    if (snapshot?.text === text) {
+      root.children.push(this.cloneBranchWithFreshIds(snapshot.node));
     } else {
       const stack = [{node: root, indent: -1}]; let count = 0;
       for (const line of text.replace(/\r/g, "").split("\n")) {
@@ -2684,6 +2685,7 @@ class CrispMindCanvas {
   }
 
   destroy() {
+    this.destroyed = true;
     // Finish editing before detaching the input; blur cleanup owns its removal.
     this.commitEditor?.();
     this.disposers.forEach(dispose => dispose());
@@ -2703,18 +2705,30 @@ class CrispMindCanvas {
   }
 
   async clipboardAction(action) {
-    if (this.options.readOnly && action !== "copy") return;
+    if (this.destroyed || this.editor || (this.options.readOnly && action !== "copy")) return;
     const id = this.selectedNodeId;
     try {
       if (action === "paste") {
         const text = await this.window.navigator.clipboard.readText();
+        if (this.destroyed || this.editor) return;
         if (!this.pasteBranchText(text, id || this.docData.root.id)) new Notice("没有可粘贴的节点，或内容超过限制");
       } else {
         const text = this.copyBranchText(id); if (!text) return;
+        const snapshot = this.clipboardBranchSnapshot;
         await this.window.navigator.clipboard.writeText(text);
-        // Await clipboard success before deleting, and don't delete a changed branch.
-        if (action === "cut" && this.copyBranchText(id) === text) this.deleteNode(id);
-        new Notice(action === "cut" ? "分支已剪切，可撤销" : "分支大纲已复制");
+        // Share only successful copies, within this plugin instance (never settings/disk).
+        if (this.options.clipboardStore) this.options.clipboardStore.snapshot = snapshot;
+        if (this.destroyed) return;
+        let removed = false;
+        if (action === "cut" && !this.editor && !this.options.readOnly) {
+          const current = this.findNode(id);
+          // Comparing flattened text misses changed notes, styles, folds and hard breaks.
+          if (current && JSON.stringify(cleanMindData(current)) === JSON.stringify(snapshot.node)) {
+            this.deleteNode(id);
+            removed = !this.findNode(id);
+          }
+        }
+        new Notice(removed ? "分支已剪切，可撤销" : action === "cut" ? "分支已复制；原节点状态已变化或不可删除，未剪切" : "分支已复制，粘贴到其他导图可保留换行、样式与备注");
       }
     } catch (error) { new Notice(`剪贴板操作失败：${error.message}`); }
   }
@@ -3139,6 +3153,7 @@ class CrispMindEditView extends TextFileView {
     this.canvasController = new CrispMindCanvas(container, this.mindDoc.data, {
       readOnly: this.readOnly,
       vaultName: this.app.vault.getName(),
+      clipboardStore: this.plugin.mindClipboardStore ||= {},
       registerEditorHotkeys: insertBreak => {
         // Obsidian handles Mod+Enter before DOM keydown reaches the editor.
         const scope = new obsidian.Scope(this.app.scope);
