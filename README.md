@@ -57,6 +57,7 @@ Part of the **Crisp Series** for Obsidian by [letschips](https://github.com/lets
 | **新建子主题** | `Tab` 或 点击节点浮岛「子主题」 |
 | **新建同级主题** | `Enter` |
 | **编辑文本** | 双击节点 或 选中后按 `Space` |
+| **节点内换行** | 编辑文本时按 `Cmd/Ctrl + Enter`；`Enter` 确认，`Esc` 取消 |
 | **删除节点及子分支** | `Delete` / `Backspace` |
 | **折叠 / 展开分支** | 节点旁的折叠圆标 / 子节点数量圆标，或按 `F` |
 | **搜索 / 聚焦分支** | 点击工具栏搜索图标，输入节点文字后选择结果 |

@@ -409,11 +409,16 @@ function markdownOutlineToTree(markdown) {
   return root;
 }
 
+// The outline is a one-line-per-node projection; embedded JSON preserves hard breaks.
+function outlineNodeText(text) {
+  return (text || "").replace(/\r\n?|\n/g, " ");
+}
+
 function treeToMarkdownOutline(rootNode, level = 0) {
   if (!rootNode || !rootNode.data) return "";
   let out = "";
   if (level === 0) {
-    out += `# ${rootNode.data.text || "Central Topic"}\n`;
+    out += `# ${outlineNodeText(rootNode.data.text) || "Central Topic"}\n`;
     if (Array.isArray(rootNode.children)) {
       for (const child of rootNode.children) {
         out += treeToMarkdownOutline(child, 1);
@@ -423,7 +428,7 @@ function treeToMarkdownOutline(rootNode, level = 0) {
   }
 
   const indent = "  ".repeat(level - 1);
-  out += `${indent}- ${rootNode.data.text || ""}\n`;
+  out += `${indent}- ${outlineNodeText(rootNode.data.text)}\n`;
   if (Array.isArray(rootNode.children)) {
     for (const child of rootNode.children) {
       out += treeToMarkdownOutline(child, level + 1);
@@ -725,7 +730,7 @@ function inspectMindSource(raw) {
     const flattenTexts = (node) => {
       const result = [];
       const walk = (n, depth) => {
-        result.push(`${depth}:${(n.data?.text || "").trim()}`);
+        result.push(`${depth}:${outlineNodeText(n.data?.text).trim()}`);
         (n.children || []).forEach(c => walk(c, depth + 1));
       };
       if (node) walk(node, 0);
@@ -2533,8 +2538,8 @@ class CrispMindCanvas {
   editNodeText(node) {
     if (!node || this.options.readOnly || this.editor) return;
     const currentText = node.data?.text || "";
-    const input = this.document.createElement("input");
-    input.type = "text";
+    const input = this.document.createElement("textarea");
+    input.rows = 1;
     input.value = currentText;
     input.className = "crisp-mind-inline-editor";
 
@@ -2568,9 +2573,12 @@ class CrispMindCanvas {
     };
     this.restoreEditorLabel = restoreLabel;
     this.options.onDeselect?.();
-    input.setAttribute("aria-label", "节点文本");
+    input.setAttribute("aria-label", "节点文本，⌘Enter 或 Ctrl+Enter 换行，Enter 确认");
+    input.title = "⌘Enter / Ctrl+Enter 换行 · Enter 确认 · Esc 取消";
     this.editor = input;
     this.container.appendChild(input);
+    this.resizeInlineEditor();
+    input.addEventListener("input", () => this.resizeInlineEditor());
     input.focus();
     input.select();
 
@@ -2581,6 +2589,7 @@ class CrispMindCanvas {
       this.restoreEditorLabel = null;
       this.editor = null;
       this.commitEditor = null;
+      disposeHotkeys?.();
       if (input.parentNode) input.parentNode.removeChild(input);
       this.container.focus({ preventScroll: true });
     };
@@ -2606,17 +2615,45 @@ class CrispMindCanvas {
       this.render();
     };
 
+    const insertBreak = () => {
+      if (committed) return;
+      input.focus();
+      // Native editing preserves the textarea undo history.
+      const inserted = this.document.execCommand?.("insertText", false, "\n");
+      if (!inserted) input.setRangeText("\n", input.selectionStart, input.selectionEnd, "end");
+      this.resizeInlineEditor();
+    };
+    const disposeHotkeys = this.options.registerEditorHotkeys?.(insertBreak);
     this.commitEditor = () => commit(false);
     input.addEventListener("blur", () => commit(false));
     input.addEventListener("keydown", (e) => {
       e.stopPropagation();
       if (e.isComposing || e.keyCode === 229) return;
       if (e.key === "Enter") {
-        commit(true);
+        e.preventDefault();
+        if (e.metaKey || e.ctrlKey) {
+          insertBreak();
+        } else commit(true);
       } else if (e.key === "Escape") {
+        e.preventDefault();
         cleanup();
       }
     });
+  }
+
+  resizeInlineEditor() {
+    const input = this.editor;
+    const node = this.editorNodeId && this.findNode(this.editorNodeId);
+    if (!input || !node) return;
+    const fontSize = (normalizeNodeStyle(node.data?.style)?.fontSize || (node.id === this.docData.root.id ? 14 : 13)) * this.scale;
+    input.style.fontSize = `${fontSize}px`;
+    input.style.padding = `${Math.max(3, 8 * this.scale)}px ${Math.max(4, 14 * this.scale)}px`;
+    const top = node._y * this.scale + this.translateY;
+    const available = Math.max(node._h * this.scale, (this.container.clientHeight || 600) - top - 16);
+    input.style.height = "auto";
+    const wanted = Math.max(node._h * this.scale, (input.scrollHeight || 0) + 4);
+    input.style.height = `${Math.min(available, wanted)}px`;
+    input.style.overflowY = wanted > available ? "auto" : "hidden";
   }
 
   updateTransform() {
@@ -2637,6 +2674,7 @@ class CrispMindCanvas {
         borderRadius: `${(this.theme.borderRadius || 8) * this.scale}px`,
         padding: `0 ${Math.max(4, 14 * this.scale)}px`
       });
+      this.resizeInlineEditor();
     }
   }
 
@@ -3101,6 +3139,17 @@ class CrispMindEditView extends TextFileView {
     this.canvasController = new CrispMindCanvas(container, this.mindDoc.data, {
       readOnly: this.readOnly,
       vaultName: this.app.vault.getName(),
+      registerEditorHotkeys: insertBreak => {
+        // Obsidian handles Mod+Enter before DOM keydown reaches the editor.
+        const scope = new obsidian.Scope(this.app.scope);
+        scope.register(["Mod"], "Enter", event => {
+          if (event.isComposing || event.keyCode === 229) return true;
+          insertBreak();
+          return false;
+        });
+        this.app.keymap.pushScope(scope);
+        return () => this.app.keymap.popScope(scope);
+      },
       onChange: () => {
         if (this.readOnly) return;
         this.dirty = true;
@@ -3593,6 +3642,7 @@ class CrispMindEditView extends TextFileView {
       ["播放导图演示", "工具栏演示；左右方向键切换，Esc 退出"],
       ["平移画布", "滚动或拖拽空白处"],
       ["缩放画布", "触控板捏合或 ⌘ / Ctrl + 滚动"],
+      ["节点内换行", "编辑文字时按 ⌘Enter / Ctrl+Enter；Enter 确认"],
       ["取消编辑或拖拽", "Esc"]
     ]) {
       const row = modal.contentEl.createDiv({cls: "crisp-mind-help-row"});

@@ -788,7 +788,7 @@ test('inline editor validation error does not deadlock canvas', () => {
   canvas.container = container;
   canvas.document = {
     createElement: (tag) => {
-      if (tag === "input") {
+      if (tag === "textarea") {
         inputEl = {
           style: {},
           setAttribute: () => {},
@@ -1149,4 +1149,65 @@ test("a temporarily revealed branch can be collapsed with one toggle", () => {
   assert.equal(parent.data.collapsed, true);
   canvas.toggleCollapse(parent.id);
   assert.ok(canvas.visibleNodes().includes(nested));
+});
+
+test('multiline node text survives save, validation, reopen, and layout', () => {
+  const { canvas, helpers } = canvasFixture();
+  const node = canvas.docData.root.children[0];
+  node.data.text = '第一行\n- 仍是同一节点\n第三行';
+  const saved = helpers.assembleMindMarkdown({data:canvas.docData});
+  assert.equal(helpers.inspectMindSource(saved), null);
+  const reopened = helpers.parseMindMarkdown(saved);
+  assert.equal(reopened.data.root.children[0].data.text, node.data.text);
+  canvas.calculateLayout();
+  assert.equal(node._lines.length, 3);
+});
+
+function multilineEditorFixture(registerEditorHotkeys) {
+  const { canvas, helpers } = canvasFixture();
+  const node = canvas.docData.root.children[0];
+  const events = {};
+  const el = {style:{},value:'',scrollHeight:72, selectionStart:0,selectionEnd:0,
+    setAttribute(){},focus(){},select(){}, addEventListener(type,fn){events[type]=fn;},
+    setRangeText(text,start,end){this.value=this.value.slice(0,start)+text+this.value.slice(end);this.selectionStart=this.selectionEnd=start+text.length;}
+  };
+  canvas.container={clientWidth:900,clientHeight:700,focus(){},appendChild(e){e.parentNode=this;},removeChild(e){e.parentNode=null;}};
+  canvas.document={createElement(tag){if(tag==='canvas')return {getContext:()=>null};el.tagName=tag;return el;}};
+  canvas.options.registerEditorHotkeys = registerEditorHotkeys;
+  canvas.editNodeText(node);
+  const key = (options={}) => {let prevented=false;events.keydown({key:'Enter',stopPropagation(){},preventDefault(){prevented=true;},...options});return prevented;};
+  return {canvas,node,el,events,key,helpers};
+}
+for (const modifier of ['metaKey','ctrlKey']) test(`${modifier}+Enter inserts a newline at the selection without committing`, () => {
+  const {canvas,node,el,key}=multilineEditorFixture();
+  assert.equal(el.tagName,'textarea');
+  el.value='Hello world';el.selectionStart=5;el.selectionEnd=6;
+  assert.equal(key({[modifier]:true}),true);
+  assert.equal(el.value,'Hello\nworld');
+  assert.ok(canvas.editor);
+  assert.equal(node.data.text,'One');
+  assert.equal(key(),true);
+  assert.equal(node.data.text,'Hello\nworld');
+  assert.equal(canvas.editor,null);
+  canvas.undo();assert.equal(canvas.docData.root.children[0].data.text,'One');
+});
+test('multiline editor preserves IME composition and Escape cancels the draft', () => {
+  const {canvas,node,el,key}=multilineEditorFixture();
+  el.value='Draft\ntext';
+  assert.equal(key({metaKey:true,isComposing:true}),false);
+  assert.ok(canvas.editor);
+  key({key:'Escape'});
+  assert.equal(node.data.text,'One');assert.equal(canvas.editor,null);
+});
+
+
+test('editor-scoped hotkeys insert breaks and are disposed on commit and cancel', () => {
+  for (const keyName of ['Enter', 'Escape']) {
+    let handler, disposed = 0;
+    const {el, key} = multilineEditorFixture(callback => {handler=callback;return ()=>disposed++;});
+    el.value='OneTwo';el.selectionStart=el.selectionEnd=3;
+    handler();assert.equal(el.value,'One\nTwo');
+    key({key:keyName});assert.equal(disposed,1);
+    handler();assert.equal(el.value,'One\nTwo');
+  }
 });
