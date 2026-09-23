@@ -21,20 +21,22 @@ Part of the **Crisp Series** for Obsidian by [letschips](https://github.com/lets
   - **组织结构图 (Organization Structure)**: 自顶向下树状分层结构。
   - **目录组织图 (Catalog Organization)**: 纵向大纲缩进层级。
   - **时间轴 (Timeline)**: 里程碑节点上下交替错落，直观呈现阶段规划与演进历史。
-  - **鱼骨图 / 因果图 (Fishbone / Ishikawa)**: 工业级根因分析图，斜骨与支骨自适应无碰撞布局算法，自带鱼头指示。
+  - **鱼骨图 / 因果图 (Fishbone / Ishikawa)**: 工业级根因分析图，斜骨与支骨按标签高度留出间距，自带鱼头指示。
 - 🎨 **6 Crisp Curated Palettes**: 内置 `Crisp Obsidian`（跟随当前主题）、`Crisp Cupertino`（灰蓝）、`Crisp Mono Editorial`（当代编辑排版）、`Crisp Nord`（极光深暗）、`Crisp Amber Warm`（羊皮纸暖色）、`Crisp Paper`（纸感画布）。
+- 🌈 **Branch Colors & Tapered Lines**: 根分支按当前配色获得稳定区分色，后代延续同一色相并逐层柔化；连接线从父节点向子节点收窄，屏幕与 SVG / PNG / PDF 导出使用相同渲染。
+- ✅ **Task Progress**: `[ ]` / `[x]` 节点待办继续写入 Markdown；父节点折叠控件外圈汇总所有后代待办完成度，折叠时仍可查看，并提供辅助标签读数。
 - 🔎 **Node Search & Branch Focus**: 按文字搜索节点并显示所属路径；聚焦某个分支时可以只查看相关结构，不影响原始折叠状态，并可从顶部快速返回全图。
 - 🎬 **Presentation Mode**: 将节点保存为讲解顺序，逐步平移、缩放并突出当前节点；每一步支持仅自己可见的备注，播放时用方向键切换、Esc 退出。
 - 🎛️ **Node Style & Notes**: 节点可单独设置形状、填充、文字、边框、字号、字重与对齐；备注随 `.mind.md` 保存，并在画布和大纲显示标记。
 - 🕸️ **Relations, Boundaries & Summaries**: 支持跨分支关系箭头、分支边界和阶段概要，随 SVG、PNG、PDF 导出，删除节点时自动清理失效引用。
 - 🧭 **Multi-Select & Outline Sidebar**: 使用 `⌘ / Ctrl + 点击` 追加选择，`Shift + 点击` 选择可见范围；大纲侧栏与画布选择、折叠和定位保持同步。
 - ⌨️ **Fluid Keyboard-First Workflow**: 全键盘高频流转，`Tab` 插入子主题、`Enter` 插入同级主题、`Space` 就地编辑、`Delete` 删除分支、`Cmd/Ctrl + Z / Shift + Z` 极速撤销与重做。
-- 🏝️ **Floating Pill & Node Island**: 极简悬浮胶囊工具栏（跟随主题底色、圆角描边，无额外模糊层），集成布局、配色、高保真导出与原生操作指南；节点就近浮岛快速添加待办与双链。
+- 🏝️ **Floating Pill & Node Island**: 极简悬浮胶囊工具栏集成布局、配色、批量折叠 / 展开、高保真导出与原生操作指南；节点浮岛快速添加待办与双链，节点右键菜单可打开双链到右侧分屏，或将分支提炼为独立笔记。
 - 📤 **High-Fidelity Multi-Format Export**:
   - **矢量 SVG**: 精准计算全局包围盒，原生支持深浅主题背景与高精度矢量曲线。
   - **2x 高清 PNG**: Retina 级超清位图渲染，自动采用纯净背景，便于分享至社交媒体与排版平台。
   - **高清 PDF**: 生成符合 PDF-1.4 格式的标准 PDF 文档（2x 高清光栅化封装，非矢量），保留真实排版与清晰度，适合长效打印与归档交流。
-- 🔗 **Markdown Outline & Bi-Directional Linking**: 首创 `.mind.md` 混合存储架构，前半部分为纯文本大纲，尾部隔离数据存储。原生支持 Obsidian 全局搜索、快捷切换（Quick Switcher）与反向链接网络。
+- 🔗 **Markdown Outline & Bi-Directional Linking**: 采用 `.mind.md` 混合存储架构，前半部分为纯文本大纲，尾部隔离数据存储。原生支持 Obsidian 全局搜索、快捷切换（Quick Switcher）与反向链接网络。
 - 🛡️ **Local-First & Snapshot Protection**: 导图解析、节点测量、布局运算与导出渲染全部在本地完成，笔记内容不出设备；破坏性改动前自动写入快照防丢。
 - 🔑 **Crisp Authorization**: 基于 Ed25519 非对称公钥密码学本地验签。全家桶授权覆盖全部插件；启动时自动扫描仓库内其它 Crisp 插件，采用其中第一个确实包含 Crisp Mind 权限的授权，作用于其它插件的单款授权不会被误继承。
 
@@ -60,6 +62,7 @@ Part of the **Crisp Series** for Obsidian by [letschips](https://github.com/lets
 | **节点内换行** | 编辑文本时按 `Cmd/Ctrl + Enter`；`Enter` 确认，`Esc` 取消 |
 | **删除节点及子分支** | `Delete` / `Backspace` |
 | **折叠 / 展开分支** | 节点旁的折叠圆标 / 子节点数量圆标，或按 `F` |
+| **全部收起 / 全部展开** | 点击底部工具栏的对应图标 |
 | **搜索 / 聚焦分支** | 点击工具栏搜索图标，输入节点文字后选择结果 |
 | **演示模式** | 点击工具栏演示图标编排步骤；播放时使用方向键切换，`Esc` 退出 |
 | **多选节点** | `Cmd/Ctrl + 点击` 追加或移除；`Shift + 点击` 选择可见范围 |

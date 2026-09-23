@@ -789,6 +789,417 @@ ${outline.trim()}
    Theme Palettes & Obsidian Integration
    ========================================================================== */
 
+const CRISP_BRANCH_PALETTES = {
+  "crisp-obsidian": {
+    light: ["#006a9e", "#a04f00", "#007a59", "#9e3d74", "#b53d1d", "#786a00", "#1f5d9b", "#61439a"],
+    dark: ["#56b4e9", "#e69f00", "#009e73", "#cc79a7", "#d55e00", "#f0e442", "#0072b2", "#b09ef5"]
+  },
+  "crisp-cupertino": {
+    light: ["#0759ad", "#a95300", "#26723a", "#8f3fa6", "#b52f60", "#137d8b", "#77521f", "#2376a0"],
+    dark: ["#65aaff", "#ffad5c", "#68c887", "#d49be7", "#ff7d9e", "#67cbd5", "#d1ad77", "#73c2ee"]
+  },
+  "crisp-nord": {
+    light: ["#456b91", "#9a653d", "#4f796b", "#92627e", "#a45445", "#74702e", "#426e83", "#6c5e99"],
+    dark: ["#88c0d0", "#d08770", "#a3be8c", "#b48ead", "#bf616a", "#ebcb8b", "#81a1c1", "#8fbcbb"]
+  },
+  "crisp-mono": {
+    light: ["#b3261e", "#292929", "#5c5c5c", "#858585", "#484848", "#a04f45", "#707070", "#383838"],
+    dark: ["#ff766e", "#ededed", "#bababa", "#929292", "#d2d2d2", "#e3948d", "#a5a5a5", "#f5f5f5"]
+  },
+  "crisp-amber": {
+    light: ["#a64b00", "#146b5a", "#51408f", "#a12e43", "#245f94", "#6b6900", "#8e4b73", "#42736e"],
+    dark: ["#ffad55", "#62c2ae", "#b3a0ff", "#ff8196", "#7fb8ed", "#dfd270", "#d18ab4", "#84c0b6"]
+  },
+  "crisp-paper": {
+    light: ["#a65437", "#4c725e", "#476a80", "#8d6280", "#827034", "#4b7773", "#9b5a4a", "#6e608d"],
+    dark: ["#d58a61", "#86b08f", "#84acc3", "#c09ab7", "#c0aa64", "#82b5ad", "#e28c75", "#aa9acb"]
+  }
+};
+
+function branchPaletteFor(themeName, isDark) {
+  const palette = CRISP_BRANCH_PALETTES[themeName] || CRISP_BRANCH_PALETTES["crisp-obsidian"];
+  return (isDark ? palette.dark : palette.light).slice();
+}
+
+function parseColorChannels(color) {
+  const value = String(color || "").trim();
+  let match = value.match(/^#([\da-f]{3}|[\da-f]{6})$/i);
+  if (match) {
+    const hex = match[1].length === 3 ? [...match[1]].map(ch => ch + ch).join("") : match[1];
+    return [0, 2, 4].map(offset => parseInt(hex.slice(offset, offset + 2), 16));
+  }
+  match = value.match(/^rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)/i);
+  if (match) return match.slice(1, 4).map(channel => Math.max(0, Math.min(255, Number(channel))));
+  return null;
+}
+
+function channelsToHex(channels) {
+  return `#${channels.map(channel => Math.round(channel).toString(16).padStart(2, "0")).join("")}`;
+}
+
+function createBranchColorMap(root, palette, backgroundColor) {
+  const result = new Map();
+  if (!root || !Array.isArray(root.children) || !Array.isArray(palette) || !palette.length) return result;
+  const background = parseColorChannels(backgroundColor) || [255, 255, 255];
+  const walk = (node, branchIndex, depth) => {
+    const baseColor = palette[branchIndex % palette.length];
+    const base = parseColorChannels(baseColor);
+    if (node?.id != null) {
+      const tint = Math.min(0.4, Math.max(0, depth - 1) * 0.08);
+      const color = !base || tint === 0
+        ? baseColor
+        : channelsToHex(base.map((channel, index) => channel * (1 - tint) + background[index] * tint));
+      result.set(node.id, { color, branchIndex, depth });
+    }
+    (node?.children || []).forEach(child => walk(child, branchIndex, depth + 1));
+  };
+  root.children.forEach((child, index) => walk(child, index, 1));
+  return result;
+}
+
+function sampleCubicBezierPoints(start, control1, control2, end, segments = 20) {
+  const count = Math.max(2, Math.min(64, Math.floor(Number(segments)) || 20));
+  const points = [];
+  for (let index = 0; index <= count; index++) {
+    const t = index / count, inverse = 1 - t;
+    const a = inverse * inverse * inverse;
+    const b = 3 * inverse * inverse * t;
+    const c = 3 * inverse * t * t;
+    const d = t * t * t;
+    points.push({
+      x: a * start.x + b * control1.x + c * control2.x + d * end.x,
+      y: a * start.y + b * control1.y + c * control2.y + d * end.y
+    });
+  }
+  return points;
+}
+
+function taperedPathFromPoints(points, startWidth = 4.2, endWidth = 1.4) {
+  if (!Array.isArray(points) || points.length < 2) return "";
+  const compact = [];
+  for (const point of points) {
+    const x = Number(point?.x), y = Number(point?.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return "";
+    if (!compact.length || Math.hypot(x - compact[compact.length - 1].x, y - compact[compact.length - 1].y) > 0.001) {
+      compact.push({ x, y });
+    }
+  }
+  if (compact.length < 2) return "";
+  const segmentLengths = compact.slice(1).map((point, index) => Math.hypot(point.x - compact[index].x, point.y - compact[index].y));
+  const totalLength = segmentLengths.reduce((sum, length) => sum + length, 0);
+  if (!Number.isFinite(totalLength) || totalLength <= 0) return "";
+  const left = [], right = [];
+  let distance = 0;
+  compact.forEach((point, index) => {
+    if (index > 0) distance += segmentLengths[index - 1];
+    const before = compact[Math.max(0, index - 1)];
+    const after = compact[Math.min(compact.length - 1, index + 1)];
+    let dx = after.x - before.x, dy = after.y - before.y;
+    let length = Math.hypot(dx, dy);
+    if (length <= 0.001) {
+      dx = index < compact.length - 1 ? after.x - point.x : point.x - before.x;
+      dy = index < compact.length - 1 ? after.y - point.y : point.y - before.y;
+      length = Math.hypot(dx, dy);
+    }
+    if (length <= 0.001) return;
+    const progress = distance / totalLength;
+    const width = Math.max(0.8, Number(startWidth) + (Number(endWidth) - Number(startWidth)) * progress);
+    const nx = -dy / length, ny = dx / length, offset = width / 2;
+    left.push({ x: point.x + nx * offset, y: point.y + ny * offset });
+    right.push({ x: point.x - nx * offset, y: point.y - ny * offset });
+  });
+  if (left.length < 2 || right.length !== left.length) return "";
+  const format = point => `${Number(point.x.toFixed(2))} ${Number(point.y.toFixed(2))}`;
+  return `M ${format(left[0])} L ${left.slice(1).map(format).join(" L ")} L ${right.reverse().map(format).join(" L ")} Z`;
+}
+
+function relationNodeRects(nodes, excludedIds = new Set(), clearance = 0) {
+  const gap = Math.max(0, Number(clearance) || 0);
+  return (Array.isArray(nodes) ? nodes : []).filter(node => !excludedIds.has(node?.id)).map(node => {
+    const x = Number(node?._x ?? node?.x);
+    const y = Number(node?._y ?? node?.y);
+    const width = Number(node?._w ?? node?.width);
+    const height = Number(node?._h ?? node?.height);
+    if (![x, y, width, height].every(Number.isFinite)) return null;
+    return {left: x - gap, top: y - gap, right: x + width + gap, bottom: y + height + gap};
+  }).filter(Boolean);
+}
+
+function relationPointInsideRect(point, rect) {
+  return point.x > rect.left && point.x < rect.right && point.y > rect.top && point.y < rect.bottom;
+}
+
+function relationSegmentBlocked(start, end, rect) {
+  if (Math.abs(start.y - end.y) < 0.001) {
+    const y = start.y;
+    return y > rect.top && y < rect.bottom &&
+      Math.max(Math.min(start.x, end.x), rect.left) < Math.min(Math.max(start.x, end.x), rect.right);
+  }
+  if (Math.abs(start.x - end.x) < 0.001) {
+    const x = start.x;
+    return x > rect.left && x < rect.right &&
+      Math.max(Math.min(start.y, end.y), rect.top) < Math.min(Math.max(start.y, end.y), rect.bottom);
+  }
+  return true;
+}
+
+function relationLineSegmentIntersectsRect(start, end, rect) {
+  const dx = end.x - start.x, dy = end.y - start.y;
+  const p = [-dx, dx, -dy, dy];
+  const q = [start.x - rect.left, rect.right - start.x, start.y - rect.top, rect.bottom - start.y];
+  let low = 0, high = 1;
+  for (let index = 0; index < 4; index++) {
+    if (Math.abs(p[index]) < 0.000001) {
+      if (q[index] < 0) return false;
+      continue;
+    }
+    const ratio = q[index] / p[index];
+    if (p[index] < 0) low = Math.max(low, ratio);
+    else high = Math.min(high, ratio);
+    if (low > high) return false;
+  }
+  return true;
+}
+
+function relationRouteIntersectsNodes(points, nodes, excludedIds = new Set(), clearance = 1) {
+  if (!Array.isArray(points) || points.length < 2) return false;
+  const obstacles = relationNodeRects(nodes, excludedIds, clearance);
+  for (let index = 1; index < points.length; index++) {
+    if (obstacles.some(rect => relationLineSegmentIntersectsRect(points[index - 1], points[index], rect))) return true;
+  }
+  return false;
+}
+
+function findOrthogonalRelationRoute(start, end, nodes, excludedIds = new Set(), clearance = 8) {
+  if (![start?.x, start?.y, end?.x, end?.y].every(value => Number.isFinite(Number(value)))) return null;
+  const source = {x: Number(start.x), y: Number(start.y)};
+  const target = {x: Number(end.x), y: Number(end.y)};
+  const excluded = excludedIds instanceof Set ? excludedIds : new Set(excludedIds || []);
+  const requestedGap = Math.max(0, Number(clearance) || 0);
+
+  for (const gap of [...new Set([requestedGap, Math.round(requestedGap / 2), 0])]) {
+    const obstacles = relationNodeRects(nodes, excluded, gap);
+    if (obstacles.some(rect => relationPointInsideRect(source, rect) || relationPointInsideRect(target, rect))) continue;
+    const xs = [source.x, target.x], ys = [source.y, target.y];
+    for (const rect of obstacles) {
+      xs.push(rect.left, rect.right);
+      ys.push(rect.top, rect.bottom);
+    }
+    const outerGap = Math.max(28, gap * 4);
+    const minX = Math.min(...xs), maxX = Math.max(...xs);
+    const minY = Math.min(...ys), maxY = Math.max(...ys);
+    xs.push(minX - outerGap, maxX + outerGap);
+    ys.push(minY - outerGap, maxY + outerGap);
+    const normalize = values => [...new Set(values.map(value => Math.round(value * 1000) / 1000))].sort((a, b) => a - b);
+    const xValues = normalize(xs), yValues = normalize(ys);
+    if (xValues.length * yValues.length > 40000) continue;
+    const xIndex = new Map(xValues.map((value, index) => [value, index]));
+    const yIndex = new Map(yValues.map((value, index) => [value, index]));
+    const startX = xIndex.get(Math.round(source.x * 1000) / 1000);
+    const startY = yIndex.get(Math.round(source.y * 1000) / 1000);
+    const endX = xIndex.get(Math.round(target.x * 1000) / 1000);
+    const endY = yIndex.get(Math.round(target.y * 1000) / 1000);
+    const blockedPoint = (x, y) => obstacles.some(rect => relationPointInsideRect({x, y}, rect));
+    if (blockedPoint(source.x, source.y) || blockedPoint(target.x, target.y)) continue;
+
+    const open = [];
+    const push = item => {
+      open.push(item);
+      let index = open.length - 1;
+      while (index > 0) {
+        const parent = Math.floor((index - 1) / 2);
+        if (open[parent].f <= item.f) break;
+        open[index] = open[parent];
+        index = parent;
+      }
+      open[index] = item;
+    };
+    const pop = () => {
+      if (!open.length) return null;
+      const first = open[0], last = open.pop();
+      if (open.length && last) {
+        let index = 0;
+        while (true) {
+          const left = index * 2 + 1, right = left + 1;
+          if (left >= open.length) break;
+          const child = right < open.length && open[right].f < open[left].f ? right : left;
+          if (open[child].f >= last.f) break;
+          open[index] = open[child];
+          index = child;
+        }
+        open[index] = last;
+      }
+      return first;
+    };
+    const stateKey = (x, y, direction) => `${x}:${y}:${direction}`;
+    const startKey = stateKey(startX, startY, 0);
+    const distances = new Map([[startKey, 0]]);
+    const parents = new Map();
+    const states = new Map([[startKey, {x: startX, y: startY, direction: 0}]]);
+    const heuristic = (x, y) => Math.abs(xValues[x] - target.x) + Math.abs(yValues[y] - target.y);
+    push({x: startX, y: startY, direction: 0, g: 0, f: heuristic(startX, startY), key: startKey});
+    let destinationKey = null;
+    const turnPenalty = 18;
+
+    while (open.length) {
+      const current = pop();
+      if (!current || current.g !== distances.get(current.key)) continue;
+      if (current.x === endX && current.y === endY) {
+        destinationKey = current.key;
+        break;
+      }
+      const neighbors = [
+        [current.x - 1, current.y, 1], [current.x + 1, current.y, 1],
+        [current.x, current.y - 1, 2], [current.x, current.y + 1, 2]
+      ];
+      const here = {x: xValues[current.x], y: yValues[current.y]};
+      for (const [nextX, nextY, direction] of neighbors) {
+        if (nextX < 0 || nextX >= xValues.length || nextY < 0 || nextY >= yValues.length) continue;
+        const next = {x: xValues[nextX], y: yValues[nextY]};
+        if (blockedPoint(next.x, next.y) || obstacles.some(rect => relationSegmentBlocked(here, next, rect))) continue;
+        const cost = Math.abs(next.x - here.x) + Math.abs(next.y - here.y) +
+          (current.direction && current.direction !== direction ? turnPenalty : 0);
+        const nextG = current.g + cost;
+        const nextKey = stateKey(nextX, nextY, direction);
+        if (nextG >= (distances.get(nextKey) ?? Infinity)) continue;
+        distances.set(nextKey, nextG);
+        parents.set(nextKey, current.key);
+        states.set(nextKey, {x: nextX, y: nextY, direction});
+        push({x: nextX, y: nextY, direction, g: nextG, f: nextG + heuristic(nextX, nextY), key: nextKey});
+      }
+    }
+    if (!destinationKey) continue;
+    const route = [];
+    for (let key = destinationKey; key; key = parents.get(key)) {
+      const state = states.get(key);
+      route.push({x: xValues[state.x], y: yValues[state.y]});
+    }
+    route.reverse();
+    route[0] = source;
+    route[route.length - 1] = target;
+    const compact = [];
+    for (const point of route) {
+      const previous = compact[compact.length - 1];
+      if (previous && Math.hypot(point.x - previous.x, point.y - previous.y) < 0.001) continue;
+      while (compact.length >= 2) {
+        const before = compact[compact.length - 2], last = compact[compact.length - 1];
+        if ((Math.abs(before.x - last.x) < 0.001 && Math.abs(last.x - point.x) < 0.001) ||
+            (Math.abs(before.y - last.y) < 0.001 && Math.abs(last.y - point.y) < 0.001)) compact.pop();
+        else break;
+      }
+      compact.push(point);
+    }
+    return compact;
+  }
+  return null;
+}
+
+function roundedOrthogonalPath(points, radius = 10) {
+  if (!Array.isArray(points) || points.length < 2) return "";
+  const compact = [];
+  for (const point of points) {
+    if (!Number.isFinite(Number(point?.x)) || !Number.isFinite(Number(point?.y))) return "";
+    const normalized = {x: Number(point.x), y: Number(point.y)};
+    const previous = compact[compact.length - 1];
+    if (previous && Math.hypot(normalized.x - previous.x, normalized.y - previous.y) < 0.001) continue;
+    while (compact.length >= 2) {
+      const before = compact[compact.length - 2], last = compact[compact.length - 1];
+      if ((Math.abs(before.x - last.x) < 0.001 && Math.abs(last.x - normalized.x) < 0.001) ||
+          (Math.abs(before.y - last.y) < 0.001 && Math.abs(last.y - normalized.y) < 0.001)) compact.pop();
+      else break;
+    }
+    compact.push(normalized);
+  }
+  if (compact.length < 2) return "";
+  const fmt = point => `${Number(point.x.toFixed(2))} ${Number(point.y.toFixed(2))}`;
+  let path = `M ${fmt(compact[0])}`;
+  for (let index = 1; index < compact.length - 1; index++) {
+    const previous = compact[index - 1], corner = compact[index], next = compact[index + 1];
+    const incomingLength = Math.hypot(corner.x - previous.x, corner.y - previous.y);
+    const outgoingLength = Math.hypot(next.x - corner.x, next.y - corner.y);
+    const bend = Math.min(Math.max(0, Number(radius) || 0), incomingLength / 2, outgoingLength / 2);
+    if (bend <= 0.001) {
+      path += ` L ${fmt(corner)}`;
+      continue;
+    }
+    const before = {x: corner.x + (previous.x - corner.x) / incomingLength * bend, y: corner.y + (previous.y - corner.y) / incomingLength * bend};
+    const after = {x: corner.x + (next.x - corner.x) / outgoingLength * bend, y: corner.y + (next.y - corner.y) / outgoingLength * bend};
+    path += ` L ${fmt(before)} Q ${fmt(corner)} ${fmt(after)}`;
+  }
+  return `${path} L ${fmt(compact[compact.length - 1])}`;
+}
+
+function findRelationLabelPosition(route, width, height, nodes, clearance = 6) {
+  if (!Array.isArray(route) || route.length < 2) return null;
+  const labelWidth = Math.max(1, Number(width) || 1), labelHeight = Math.max(1, Number(height) || 1);
+  const obstacles = relationNodeRects(nodes, new Set(), Math.max(0, Number(clearance) || 0));
+  const candidates = [];
+  for (let index = 1; index < route.length; index++) {
+    const start = route[index - 1], end = route[index];
+    const horizontal = Math.abs(start.y - end.y) < 0.001;
+    const length = horizontal ? Math.abs(end.x - start.x) : Math.abs(end.y - start.y);
+    const needed = (horizontal ? labelWidth : labelHeight) + 20;
+    if (length < needed) continue;
+    for (const ratio of [0.5, 0.35, 0.65, 0.2, 0.8]) {
+      const centerX = horizontal ? start.x + (end.x - start.x) * ratio : start.x;
+      const centerY = horizontal ? start.y : start.y + (end.y - start.y) * ratio;
+      for (const side of [-1, 1]) {
+        const candidate = horizontal
+          ? {x: centerX - labelWidth / 2, y: side < 0 ? centerY - labelHeight - 8 : centerY + 8, width: labelWidth, height: labelHeight}
+          : {x: side < 0 ? centerX - labelWidth - 8 : centerX + 8, y: centerY - labelHeight / 2, width: labelWidth, height: labelHeight};
+        const overlaps = obstacles.some(rect => candidate.x < rect.right && candidate.x + candidate.width > rect.left &&
+          candidate.y < rect.bottom && candidate.y + candidate.height > rect.top);
+        if (!overlaps) candidates.push({...candidate, score: -length + Math.abs(ratio - 0.5)});
+      }
+    }
+  }
+  candidates.sort((a, b) => a.score - b.score);
+  if (!candidates.length) return null;
+  const {score, ...position} = candidates[0];
+  return position;
+}
+
+function taskStateFromText(text) {
+  const match = String(text || "").match(/^\[([ xX])\](?=\s|$)/);
+  if (!match) return null;
+  return match[1].toLowerCase() === "x";
+}
+
+function getDescendantTaskProgress(node) {
+  let completed = 0, total = 0;
+  const visit = current => {
+    const taskState = taskStateFromText(current?.data?.text);
+    if (taskState !== null) {
+      total++;
+      if (taskState) completed++;
+    }
+    (current?.children || []).forEach(visit);
+  };
+  (node?.children || []).forEach(visit);
+  return { total, completed, ratio: total ? completed / total : 0 };
+}
+
+function createTaskProgressMap(root) {
+  const result = new Map();
+  const visit = node => {
+    let total = 0, completed = 0;
+    (node?.children || []).forEach(child => {
+      const aggregate = visit(child);
+      total += aggregate.total;
+      completed += aggregate.completed;
+    });
+    const progress = { total, completed, ratio: total ? completed / total : 0 };
+    if (node?.id != null) result.set(node.id, progress);
+    const ownTask = taskStateFromText(node?.data?.text);
+    return {
+      total: total + (ownTask === null ? 0 : 1),
+      completed: completed + (ownTask === true ? 1 : 0)
+    };
+  };
+  if (root) visit(root);
+  return result;
+}
+
 function getComputedThemeConfig(themeName = "crisp-obsidian") {
   const isDark = typeof document !== "undefined" && document.body?.classList?.contains
     ? document.body.classList.contains("theme-dark")
@@ -804,6 +1215,7 @@ function getComputedThemeConfig(themeName = "crisp-obsidian") {
       textMuted: isDark ? "#8e8e93" : "#6c6c70",
       borderColor: isDark ? "#3a3a3c" : "#d1d1d6",
       lineColor: "#007aff",
+      branchColors: branchPaletteFor("crisp-cupertino", isDark),
       activeBorderColor: "#5856d6",
       borderRadius: 8
     };
@@ -819,6 +1231,7 @@ function getComputedThemeConfig(themeName = "crisp-obsidian") {
       textMuted: "#d8dee9",
       borderColor: "#4c566a",
       lineColor: "#81a1c1",
+      branchColors: branchPaletteFor("crisp-nord", isDark),
       activeBorderColor: "#8fbcbb",
       borderRadius: 6
     };
@@ -834,6 +1247,7 @@ function getComputedThemeConfig(themeName = "crisp-obsidian") {
       textMuted: isDark ? "#757575" : "#666666",
       borderColor: isDark ? "#333333" : "#cccccc",
       lineColor: isDark ? "#e63946" : "#222222",
+      branchColors: branchPaletteFor("crisp-mono", isDark),
       activeBorderColor: "#e63946",
       borderRadius: 4
     };
@@ -849,6 +1263,7 @@ function getComputedThemeConfig(themeName = "crisp-obsidian") {
       textMuted: isDark ? "#b45309" : "#92400e",
       borderColor: isDark ? "#451a03" : "#fcd34d",
       lineColor: "#d97706",
+      branchColors: branchPaletteFor("crisp-amber", isDark),
       activeBorderColor: "#f59e0b",
       borderRadius: 10
     };
@@ -864,6 +1279,7 @@ function getComputedThemeConfig(themeName = "crisp-obsidian") {
       textMuted: isDark ? "#aaa095" : "#756a5f",
       borderColor: isDark ? "#474640" : "#ded3c3",
       lineColor: isDark ? "#8e7868" : "#b5a58f",
+      branchColors: branchPaletteFor("crisp-paper", isDark),
       activeBorderColor: isDark ? "#e8a47f" : "#8f4a31",
       borderRadius: 5,
       fontFamily: '"Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif',
@@ -909,6 +1325,7 @@ function getComputedThemeConfig(themeName = "crisp-obsidian") {
     textMuted: textMuted,
     borderColor: border,
     lineColor: accent,
+    branchColors: branchPaletteFor("crisp-obsidian", isDark),
     activeBorderColor: accent,
     borderRadius: 8
   };
@@ -1609,6 +2026,55 @@ class CrispMindCanvas {
     });
   }
 
+  collapseAllBranches() {
+    return this.setAllBranchesCollapsed(true);
+  }
+
+  expandAllBranches() {
+    return this.setAllBranchesCollapsed(false);
+  }
+
+  setAllBranchesCollapsed(collapse) {
+    if (this.editor || this.presentationActive) return false;
+    const root = this.docData.root;
+    if (!root) return false;
+    const branches = [];
+    const collect = node => {
+      if (!node) return;
+      if (node.children?.length) branches.push(node);
+      (node.children || []).forEach(collect);
+    };
+    collect(root);
+    const desiredState = node => node !== root && !!collapse;
+    const dataChanged = branches.some(node => !!node.data.collapsed !== desiredState(node));
+    const viewChanged = !!this.branchFocusId || this.revealedAncestorIds.size > 0;
+    if (!dataChanged && !viewChanged) return false;
+
+    const apply = () => {
+      for (const node of branches) {
+        if (desiredState(node)) node.data.collapsed = true;
+        else if (node.data.collapsed) delete node.data.collapsed;
+      }
+      this.branchFocusId = null;
+      this.revealedAncestorIds.clear();
+      if (collapse) this.setSelectionState([root.id], root.id);
+    };
+
+    if (this.options.readOnly) {
+      apply();
+      this.render();
+      this.options.onSelectionChange?.(this.selectedNodes());
+      return true;
+    }
+    const changed = this.transact(apply);
+    if (!changed && viewChanged) this.render();
+    if (changed || viewChanged) {
+      this.options.onSelectionChange?.(this.selectedNodes());
+      return true;
+    }
+    return false;
+  }
+
   moveNode(id, targetId, placement = "inside") {
     return this.transact(() => {
       const node = this.findNode(id), target = this.findNode(targetId), oldParent = this.findParent(id);
@@ -1807,7 +2273,7 @@ class CrispMindCanvas {
         if (subs.length === 0) return bone._w + 60;
         const maxSubTreeW = Math.max(...subs.map(s => s._treeWidth));
         const totalSubsH = subs.reduce((sum, s) => sum + s._treeHeight, 0) + Math.max(0, subs.length - 1) * V_GAP;
-        const boneSpanY = Math.max(140, totalSubsH + 40);
+        const boneSpanY = Math.max(140, totalSubsH + V_GAP * 2 + bone._h / 2);
         const boneDx = Math.max(80, Math.round(boneSpanY * 0.55));
         return Math.max(boneDx + bone._w + 40, boneDx + maxSubTreeW + 50);
       };
@@ -1845,7 +2311,11 @@ class CrispMindCanvas {
 
         const subs = children(bone);
         const totalSubsH = subs.reduce((sum, s) => sum + s._treeHeight, 0) + Math.max(0, subs.length - 1) * V_GAP;
-        const boneSpanY = Math.max(140, totalSubsH + 40);
+        // Reserve room for the bone label as well as its child stack. The old
+        // fixed 40px allowance let the last lower child (and first upper
+        // child) intrude into the bone box when a branch contained several
+        // nodes or a taller wrapped label.
+        const boneSpanY = Math.max(140, totalSubsH + V_GAP * 2 + bone._h / 2);
         const boneDx = Math.max(80, Math.round(boneSpanY * 0.55));
 
         const boneTipX = spineX - boneDx;
@@ -1861,7 +2331,9 @@ class CrispMindCanvas {
 
         // Position level 2 children and their subtrees
         if (subs.length > 0) {
-          let currY = isUpper ? (boneTipY + 20) : (axisY + 30);
+          let currY = isUpper
+            ? (boneTipY + bone._h / 2 + V_GAP)
+            : (axisY + V_GAP);
           subs.forEach((sub) => {
             const nodeY = currY + (sub._treeHeight - sub._h) / 2;
             const centerY = nodeY + sub._h / 2;
@@ -1895,6 +2367,15 @@ class CrispMindCanvas {
 
   render() {
     this.calculateLayout();
+    const branchBackground = this.theme.backgroundColor === "transparent"
+      ? this.theme.nodeBackground
+      : this.theme.backgroundColor;
+    this.branchColorMap = createBranchColorMap(
+      this.docData.root,
+      this.theme.branchColors || [],
+      branchBackground
+    );
+    this.taskProgressMap = createTaskProgressMap(this.docData.root);
     this.container.style.backgroundColor = this.theme.backgroundColor;
     if (this.theme.paperPattern) {
       this.container.style.setProperty("--crisp-mind-paper-bg", this.theme.backgroundColor);
@@ -1976,24 +2457,34 @@ class CrispMindCanvas {
         const endY = child._y + child._h / 2;
         const midX = (startX + endX) / 2;
 
-        let d = `M ${startX} ${startY} C ${midX} ${startY}, ${midX} ${endY}, ${endX} ${endY}`;
+        let points = sampleCubicBezierPoints(
+          { x: startX, y: startY },
+          { x: midX, y: startY },
+          { x: midX, y: endY },
+          { x: endX, y: endY }
+        );
         if (this.layout === "organizationStructure") {
           const sx = node._x + node._w / 2, sy = node._y + node._h;
           const ex = child._x + child._w / 2, ey = child._y, my = (sy + ey) / 2;
-          d = `M ${sx} ${sy} C ${sx} ${my}, ${ex} ${my}, ${ex} ${ey}`;
+          points = sampleCubicBezierPoints(
+            { x: sx, y: sy }, { x: sx, y: my }, { x: ex, y: my }, { x: ex, y: ey }
+          );
         } else if (this.layout === "catalogOrganization") {
-          d = `M ${node._x + 20} ${node._y + node._h} V ${endY} H ${child._x}`;
+          const sx = node._x + 20, sy = node._y + node._h;
+          points = [{ x: sx, y: sy }, { x: sx, y: endY }, { x: child._x, y: endY }];
         } else if (this.layout === "timeline") {
           if (node.id === this.docData.root.id) {
             const axisY = this._timelineAxis ? this._timelineAxis.y : (node._y + node._h / 2);
             const midNodeX = child._x + child._w / 2;
             const childEdgeY = child._y > axisY ? child._y : (child._y + child._h);
-            d = `M ${midNodeX} ${axisY} L ${midNodeX} ${childEdgeY}`;
+            points = [{ x: midNodeX, y: axisY }, { x: midNodeX, y: childEdgeY }];
           } else {
             const sx = node._x + node._w, sy = node._y + node._h / 2;
             const ex = child._x, ey = child._y + child._h / 2;
             const mx = (sx + ex) / 2;
-            d = `M ${sx} ${sy} C ${mx} ${sy}, ${mx} ${ey}, ${ex} ${ey}`;
+            points = sampleCubicBezierPoints(
+              { x: sx, y: sy }, { x: mx, y: sy }, { x: mx, y: ey }, { x: ex, y: ey }
+            );
           }
         } else if (this.layout === "fishbone") {
           if (node.id === this.docData.root.id) {
@@ -2001,23 +2492,33 @@ class CrispMindCanvas {
             const boneEndY = child._y + child._h / 2;
             const spineConnectX = child._spineConnectX || (boneEndX + 80);
             const spineConnectY = child._spineConnectY || (this._fishboneAxis ? this._fishboneAxis.y : (node._y + node._h / 2));
-            d = `M ${spineConnectX} ${spineConnectY} L ${boneEndX} ${boneEndY}`;
+            points = [{ x: spineConnectX, y: spineConnectY }, { x: boneEndX, y: boneEndY }];
           } else if (child._boneConnectX != null) {
-            d = `M ${child._boneConnectX} ${child._boneConnectY} H ${child._x + child._w}`;
+            points = [
+              { x: child._boneConnectX, y: child._boneConnectY },
+              { x: child._x + child._w, y: child._boneConnectY }
+            ];
           } else {
             const sx = node._x;
             const sy = node._y + node._h / 2;
             const ex = child._x + child._w;
             const ey = child._y + child._h / 2;
             const mx = (sx + ex) / 2;
-            d = `M ${sx} ${sy} C ${mx} ${sy}, ${mx} ${ey}, ${ex} ${ey}`;
+            points = sampleCubicBezierPoints(
+              { x: sx, y: sy }, { x: mx, y: sy }, { x: mx, y: ey }, { x: ex, y: ey }
+            );
           }
         }
-        line.setAttribute("d", d);
-        line.setAttribute("fill", "none");
-        line.setAttribute("stroke", this.theme.lineColor || "#7c3aed");
-        line.setAttribute("stroke-width", "1.5");
-        line.setAttribute("stroke-linecap", "round");
+        const branchInfo = this.branchColorMap?.get(child.id);
+        line.setAttribute("d", taperedPathFromPoints(points));
+        line.setAttribute("fill", branchInfo?.color || this.theme.lineColor || "#7c3aed");
+        line.setAttribute("stroke", "none");
+        line.setAttribute("stroke-linejoin", "round");
+        line.setAttribute("pointer-events", "none");
+        if (branchInfo) {
+          line.setAttribute("data-branch-index", String(branchInfo.branchIndex));
+          line.setAttribute("data-branch-depth", String(branchInfo.depth));
+        }
         if (currentPresentationNodeId && node.id !== currentPresentationNodeId && child.id !== currentPresentationNodeId) {
           line.setAttribute("opacity", "0.16");
         }
@@ -2034,8 +2535,14 @@ class CrispMindCanvas {
     const rawText = node.data?.text || "Topic";
     const isCompleted = /^\[[xX]\]\s/.test(rawText);
     const nodeStyle = normalizeNodeStyle(node.data?.style) || {};
+    const descendantTaskProgress = this.taskProgressMap?.get(node.id) || getDescendantTaskProgress(node);
+    const branchColor = this.branchColorMap?.get(node.id)?.color || "";
 
-    const signature = JSON.stringify([node.data, node._w, node._h, node._lines, isSelected, isPrimarySelected, isRoot, this.theme, node.children?.length, isCompleted, this.isNodeExpanded(node)]);
+    const signature = JSON.stringify([
+      node.data, node._w, node._h, node._lines, isSelected, isPrimarySelected, isRoot, this.theme,
+      node.children?.length, isCompleted, this.isNodeExpanded(node), branchColor,
+      descendantTaskProgress.completed, descendantTaskProgress.total
+    ]);
     this.seenNodes = this.seenNodes || new Set();
     this.seenNodes.add(node.id);
     const cached = this.nodeElements ? this.nodeElements.get(node.id) : null;
@@ -2201,7 +2708,10 @@ class CrispMindCanvas {
     if (node.children?.length) {
       const fold = this.document.createElementNS("http://www.w3.org/2000/svg", "g");
       fold.setAttribute("data-collapse", node.id); fold.setAttribute("class", "crisp-mind-collapse");
-      fold.setAttribute("role", "button"); fold.setAttribute("aria-label", !this.isNodeExpanded(node) ? `展开 ${node.children.length} 个子主题` : "折叠分支");
+      const progress = descendantTaskProgress;
+      const progressLabel = progress.total ? `，待办完成 ${progress.completed}/${progress.total}` : "";
+      fold.setAttribute("role", "button");
+      fold.setAttribute("aria-label", `${!this.isNodeExpanded(node) ? `展开 ${node.children.length} 个子主题` : "折叠分支"}${progressLabel}`);
 
       let foldX = node._w + 13, foldY = node._h / 2;
       if (this.layout === "organizationStructure") {
@@ -2212,6 +2722,33 @@ class CrispMindCanvas {
         if (isLeftward) foldX = -13;
       } else if (this.layout === "fishbone") {
         foldX = -13;
+      }
+
+      if (progress.total) {
+        const radius = 12.25;
+        const circumference = 2 * Math.PI * radius;
+        const track = this.document.createElementNS("http://www.w3.org/2000/svg", "circle");
+        track.setAttribute("class", "crisp-mind-task-progress-track");
+        track.setAttribute("cx", foldX); track.setAttribute("cy", foldY); track.setAttribute("r", radius);
+        track.setAttribute("fill", "none"); track.setAttribute("stroke", this.theme.borderColor || "#808080");
+        track.setAttribute("stroke-width", "2.25"); track.setAttribute("pointer-events", "none");
+        track.setAttribute("data-task-progress", `${progress.completed}/${progress.total}`);
+        fold.appendChild(track);
+
+        const indicator = this.document.createElementNS("http://www.w3.org/2000/svg", "circle");
+        indicator.setAttribute("class", "crisp-mind-task-progress-value");
+        indicator.setAttribute("cx", foldX); indicator.setAttribute("cy", foldY); indicator.setAttribute("r", radius);
+        indicator.setAttribute("fill", "none");
+        indicator.setAttribute("stroke", this.branchColorMap?.get(node.id)?.color || this.theme.accentColor || "#7c3aed");
+        indicator.setAttribute("stroke-width", "2.75"); indicator.setAttribute("stroke-linecap", "round");
+        indicator.setAttribute("stroke-dasharray", `${circumference * progress.ratio} ${circumference * (1 - progress.ratio)}`);
+        indicator.setAttribute("transform", `rotate(-90 ${foldX} ${foldY})`);
+        indicator.setAttribute("pointer-events", "none"); indicator.setAttribute("aria-hidden", "true");
+        fold.appendChild(indicator);
+
+        const progressTitle = this.document.createElementNS("http://www.w3.org/2000/svg", "title");
+        progressTitle.textContent = `待办完成 ${progress.completed}/${progress.total}`;
+        fold.appendChild(progressTitle);
       }
 
       const circle = this.document.createElementNS("http://www.w3.org/2000/svg", "circle");
@@ -2395,7 +2932,8 @@ class CrispMindCanvas {
 
   renderRelations() {
     if (!this.relationsGroup || !Array.isArray(this.docData.relations)) return;
-    const visible = new Set(this.visibleNodes().map(node => node.id));
+    const visibleNodes = this.visibleNodes();
+    const visible = new Set(visibleNodes.map(node => node.id));
     for (const relation of this.docData.relations) {
       const from = this.findNode(relation.from);
       const to = this.findNode(relation.to);
@@ -2428,8 +2966,39 @@ class CrispMindCanvas {
       const bend = Math.min(90, Math.max(34, distance * 0.18));
       const mx = (start.x + end.x) / 2 - (dy / distance) * bend;
       const my = (start.y + end.y) / 2 + (dx / distance) * bend;
+      let pathData = `M ${start.x} ${start.y} Q ${mx} ${my} ${end.x} ${end.y}`;
+      let labelPosition = relation.label
+        ? {x: mx - 18, y: my - 20, width: this.annotationLabelWidth(relation.label), height: 22}
+        : null;
+      if (this.layout === "fishbone") {
+        const endpointIds = new Set([from.id, to.id]);
+        const curveSteps = Math.max(24, Math.min(128, Math.ceil(distance / 8)));
+        const curvePoints = Array.from({length: curveSteps + 1}, (_, index) => {
+          const t = index / curveSteps, inverse = 1 - t;
+          return {
+            x: inverse * inverse * start.x + 2 * inverse * t * mx + t * t * end.x,
+            y: inverse * inverse * start.y + 2 * inverse * t * my + t * t * end.y
+          };
+        });
+        const lineBlocked = relationRouteIntersectsNodes(curvePoints, visibleNodes, endpointIds, 2);
+        const labelBlocked = labelPosition && relationNodeRects(visibleNodes, new Set(), 5).some(rect =>
+          labelPosition.x < rect.right && labelPosition.x + labelPosition.width > rect.left &&
+          labelPosition.y < rect.bottom && labelPosition.y + labelPosition.height > rect.top
+        );
+        if (lineBlocked || labelBlocked) {
+          const route = findOrthogonalRelationRoute(start, end, visibleNodes, endpointIds, 8);
+          if (route?.length >= 2) {
+            pathData = roundedOrthogonalPath(route, 10);
+            labelPosition = relation.label
+              ? findRelationLabelPosition(route, this.annotationLabelWidth(relation.label), 22, visibleNodes, 6)
+              : null;
+          } else if (lineBlocked) {
+            labelPosition = null;
+          }
+        }
+      }
       const path = this.document.createElementNS("http://www.w3.org/2000/svg", "path");
-      path.setAttribute("d", `M ${start.x} ${start.y} Q ${mx} ${my} ${end.x} ${end.y}`);
+      path.setAttribute("d", pathData);
       path.setAttribute("fill", "none");
       path.setAttribute("stroke", color);
       path.setAttribute("stroke-width", "2");
@@ -2451,7 +3020,13 @@ class CrispMindCanvas {
         this.relationsGroup.appendChild(dot);
       }
       if (relation.label) {
-        const label = this.annotationLabelLabel(relation.label, mx - 18, my - 20, color);
+        if (!labelPosition) {
+          const title = this.document.createElementNS("http://www.w3.org/2000/svg", "title");
+          title.textContent = relation.label;
+          path.appendChild(title);
+          continue;
+        }
+        const label = this.annotationLabelLabel(relation.label, labelPosition.x, labelPosition.y, color);
         label?.setAttribute("class", "crisp-mind-annotation-label crisp-mind-relation-label");
         if (label) this.relationsGroup.appendChild(label);
       }
@@ -3698,6 +4273,14 @@ class CrispMindEditView extends TextFileView {
     this.createToolbarDivider();
 
     }
+    this.createToolbarButton("chevrons-down-up", "收起所有分支", () => {
+      this.canvasController.collapseAllBranches();
+    });
+    this.createToolbarButton("chevrons-up-down", "展开所有分支", () => {
+      this.canvasController.expandAllBranches();
+    });
+    this.createToolbarDivider();
+
     // Layout Switcher
     this.createToolbarButton("layout-grid", "切换布局（切换后可点击适应画布）", (e) => {
       if (!this.requireLicense("布局切换") || this.readOnly) return;
@@ -3815,6 +4398,18 @@ class CrispMindEditView extends TextFileView {
     menu.addItem(i => i.setTitle(summary ? "编辑概要" : "添加概要").setIcon("panel-top-dashed").onClick(() => this.promptSummary(node, summary)));
     if (c.selectedNodeIds.size === 2) menu.addItem(i => i.setTitle("为选中节点建立关系").setIcon("git-branch").onClick(() => this.promptRelation(c.selectedNodes())));
     menu.addItem(i => i.setTitle("设置 / 更换笔记链接").setIcon("link").onClick(() => this.editNodeLink(node.id)));
+    const linkedNote = mindNodeLink(node.data?.text || "", this.app.vault.getName());
+    if (linkedNote) {
+      menu.addItem(i => i.setTitle("打开关联笔记").setIcon("file-text").onClick(() => {
+        void this.openLinkedNote(linkedNote.target);
+      }));
+      menu.addItem(i => i.setTitle("在右侧分屏打开").setIcon("panel-right").onClick(() => {
+        void this.openLinkedNote(linkedNote.target, "split");
+      }));
+    }
+    menu.addItem(i => i.setTitle("提炼当前分支为独立笔记").setIcon("external-link").onClick(() => {
+      void this.extractCurrentNodeToTopic();
+    }));
     menu.addSeparator();
     menu.addItem(i => i.setTitle("复制分支 · ⌘C").setIcon("copy").onClick(() => { void c.clipboardAction("copy"); }));
     if (node.id !== c.docData.root.id) menu.addItem(i => i.setTitle("剪切分支 · ⌘X").setIcon("scissors").onClick(() => { void c.clipboardAction("cut"); }));
@@ -3910,13 +4505,15 @@ class CrispMindEditView extends TextFileView {
     this.islandEl.style.top = `${Math.max(8, Math.min(paneHeight - height - 8, top))}px`;
   }
 
-  async openLinkedNote(target) {
+  async openLinkedNote(target, pane = "tab") {
     try {
       const hash = target.indexOf("#");
       const path = hash < 0 ? target : target.slice(0, hash);
       const file = this.app.metadataCache.getFirstLinkpathDest(path, this.file?.path || "");
       if (!file) { new Notice("找不到链接的笔记，请检查路径或重新设置链接"); return; }
-      const leaf = this.app.workspace.getLeaf("tab");
+      const leaf = pane === "split"
+        ? this.app.workspace.getLeaf("split", "vertical")
+        : this.app.workspace.getLeaf("tab");
       await leaf.openFile(file, {active: true, eState: hash < 0 ? {} : {subpath: target.slice(hash)}});
       await this.app.workspace.revealLeaf(leaf);
     } catch (error) { new Notice(`无法打开笔记：${error.message}`); }
