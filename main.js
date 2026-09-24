@@ -4,7 +4,7 @@
    ========================================================================== */
 
 const obsidian = require("obsidian");
-const { Plugin, TextFileView, MarkdownView, Setting, PluginSettingTab, Notice, TFile, Modal, FuzzySuggestModal, setIcon, Menu, requestUrl } = obsidian;
+const { Plugin, TextFileView, MarkdownView, Setting, PluginSettingTab, Notice, TFile, Modal, FuzzySuggestModal, setIcon, Menu } = obsidian;
 const addIcon = obsidian.addIcon || (() => {});
 
 const VIEW_TYPE_CRISP_MIND = "crisp-mind-view";
@@ -46,310 +46,14 @@ const CRISP_MIND_SVG = `<svg class="crisp-mind-brand-icon" viewBox="0 0 75 75" x
   </g>
 </svg>`;
 
-const CRISP_PUBLIC_KEY_PEM = `-----BEGIN PUBLIC KEY-----
-MCowBQYDK2VwAyEAiz41HIDpD59SH3DjKnovUO+EEhTJXjvmiug/ev9t4ZQ=
------END PUBLIC KEY-----`;
-
-const CRISP_LICENSE_PRODUCTS = [
-  "Crisp Suite",
-  "Crisp Mind",
-  "Crisp Pulse",
-  "Crisp Organize",
-  "Crisp ASR",
-  "Crisp Annotations",
-  "Crisp File Explorer",
-  "Crisp Focus",
-  "Crisp Reading Rail",
-  "Crisp Base",
-  "Crisp Visual"
-];
-
 const DEFAULT_SETTINGS = {
   defaultLayout: "logicalStructure", // logicalStructure | mindMap | organizationStructure | catalogOrganization | timeline | fishbone
   defaultTheme: "crisp-obsidian",     // crisp-obsidian | crisp-cupertino | crisp-nord | crisp-mono | crisp-amber | crisp-paper
   toolbarPosition: "bottom",         // bottom | top
   enablePulseSync: true,
   enableFocusZen: true,
-  autoBackup: true,
-  licenseCode: "",
-  licenseLastOnlineAt: 0
+  autoBackup: true
 };
-
-/* ==========================================================================
-   Cryptography & Vault License Discovery
-   ========================================================================== */
-
-function base64UrlToUint8Array(base64url) {
-  const base64 = (base64url || "").replace(/-/g, "+").replace(/_/g, "/");
-  const pad = base64.length % 4;
-  const padded = pad ? base64 + "=".repeat(4 - pad) : base64;
-  const decodeFn = typeof atob === "function" ? atob : (b64) => (typeof Buffer !== "undefined" ? Buffer.from(b64, "base64").toString("binary") : "");
-  const raw = decodeFn(padded);
-  const buffer = new Uint8Array(raw.length);
-  for (let i = 0; i < raw.length; i++) {
-    buffer[i] = raw.charCodeAt(i);
-  }
-  return buffer;
-}
-
-function getCryptoSubtle(windowObj = (typeof window !== "undefined" ? window : null)) {
-  if (windowObj && windowObj.crypto && windowObj.crypto.subtle) {
-    return windowObj.crypto.subtle;
-  }
-  if (typeof globalThis !== "undefined" && globalThis.crypto && globalThis.crypto.subtle) {
-    return globalThis.crypto.subtle;
-  }
-  try {
-    const nodeCrypto = require("crypto");
-    if (nodeCrypto && nodeCrypto.webcrypto && nodeCrypto.webcrypto.subtle) {
-      return nodeCrypto.webcrypto.subtle;
-    }
-  } catch (e) {}
-  return null;
-}
-
-async function verifyLicenseCode(licenseCode, targetPluginId = "crisp-mind", app = null, windowObj = null, options = {}) {
-  if (typeof targetPluginId === "object" && targetPluginId !== null && !app) {
-    windowObj = targetPluginId;
-    targetPluginId = "crisp-mind";
-  }
-  const trimmed = (licenseCode || "").trim();
-  if (!trimmed || !trimmed.includes(".")) {
-    return { valid: false, reason: "授权码格式无效（须包含 payload 与签名）" };
-  }
-  const parts = trimmed.split(".");
-  if (parts.length !== 2) {
-    return { valid: false, reason: "授权码分段无效" };
-  }
-  const [payloadB64, sigB64] = parts;
-  try {
-    let payloadJson;
-    try {
-      payloadJson = new TextDecoder().decode(base64UrlToUint8Array(payloadB64));
-    } catch (e) {
-      return { valid: false, reason: "无法解码授权载荷" };
-    }
-    const payload = JSON.parse(payloadJson);
-    if (!payload || typeof payload !== "object") {
-      return { valid: false, reason: "授权载荷数据结构无效" };
-    }
-    if (!CRISP_LICENSE_PRODUCTS.includes(payload.product)) {
-      return { valid: false, reason: "授权码不属于 Crisp 系列插件" };
-    }
-    const features = Array.isArray(payload.features) ? payload.features : [];
-    if (!features.includes("all") && !features.includes(targetPluginId)) {
-      return { valid: false, reason: `该授权码未包含 ${targetPluginId} 权限` };
-    }
-    if (payload.expiresAt) {
-      const expiresAt = new Date(payload.expiresAt).getTime();
-      if (!Number.isFinite(expiresAt)) {
-        return { valid: false, reason: "授权到期时间无效" };
-      }
-      if (expiresAt < Date.now()) {
-        return { valid: false, reason: `授权已于 ${String(payload.expiresAt).split("T")[0]} 到期` };
-      }
-    }
-
-    const subtle = getCryptoSubtle(windowObj);
-    if (!subtle) {
-      return { valid: false, reason: "当前环境无法验证签名" };
-    }
-    const pemContents = CRISP_PUBLIC_KEY_PEM
-      .replace("-----BEGIN PUBLIC KEY-----", "")
-      .replace("-----END PUBLIC KEY-----", "")
-      .replace(/\s/g, "");
-    const der = base64UrlToUint8Array(pemContents);
-    const key = await subtle.importKey("spki", der.buffer, { name: "Ed25519" }, false, ["verify"]);
-    const payloadBytes = new TextEncoder().encode(payloadB64);
-    const sigBytes = base64UrlToUint8Array(sigB64);
-    const verified = await subtle.verify({ name: "Ed25519" }, key, sigBytes, payloadBytes);
-    if (!verified) return { valid: false, reason: "授权签名无效或伪造" };
-
-    // Inheritance scans several candidate codes, so it must not trigger one device check per
-    // candidate. Local-only mode stops after the cryptographic checks; the license finally
-    // adopted still goes through the online device check via validateCurrentLicense().
-    if (options.online === false) {
-      return { valid: true, payload, message: "本地签名校验通过", source: "local" };
-    }
-
-    try {
-      const deviceId = app?.appId || (app?.vault?.getName ? "vault-" + encodeURIComponent(app.vault.getName()) : "device-default");
-      const requestFn = obsidian.requestUrl || (typeof requestUrl === "function" ? requestUrl : null);
-      if (requestFn) {
-        const res = await Promise.race([
-          requestFn({
-            url: "https://license.letschips.xyz/api/verify-device",
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              licenseCode: trimmed,
-              deviceId: deviceId,
-              action: "activate",
-              pluginId: targetPluginId
-            }),
-            throw: false
-          }),
-          new Promise((_, reject) => setTimeout(() => reject(new Error("Crisp license check timeout")), 2500))
-        ]);
-
-        let cloudResult = null;
-        try { cloudResult = res.json; } catch { cloudResult = null; }
-
-        const isAuthDenial =
-          (res.status === 200 || res.status === 400 || res.status === 401 || res.status === 403) &&
-          cloudResult !== null &&
-          cloudResult.valid === false;
-
-        if (isAuthDenial) {
-          return {
-            valid: false,
-            reason: cloudResult?.reason || "授权已被服务端拒绝或设备数已达上限"
-          };
-        }
-
-        if (res.status === 200 && cloudResult && cloudResult.valid === true) {
-          return { valid: true, payload, message: cloudResult.message, source: "online" };
-        }
-      }
-    } catch (netErr) {
-      // Offline fallback
-      return { valid: true, payload, message: "离线验证成功", source: "offline" };
-    }
-
-    return { valid: true, payload, message: "离线验证成功", source: "offline" };
-  } catch (e) {
-    return { valid: false, reason: e.message || "验证异常" };
-  }
-}
-
-class CrispMindLicenseManager {
-  constructor(app, settings, options = {}) {
-    this.app = app;
-    this.settings = settings;
-    this.pluginId = "crisp-mind";
-    this.status = { valid: false, reason: "尚未激活" };
-  }
-
-  getStatus() {
-    return this.status;
-  }
-
-  isLicensed() {
-    return !!this.status.valid;
-  }
-
-  async validateCurrentLicense() {
-    const code = (this.settings.licenseCode || "").trim();
-    if (!code) {
-      this.status = { valid: false, reason: "未输入授权码" };
-      return this.status;
-    }
-    const result = await verifyLicenseCode(code, this.pluginId, this.app);
-    if (result.valid) {
-      this.status = { valid: true, payload: result.payload, source: result.source || "offline" };
-      this.settings.licenseLastOnlineAt = Date.now();
-    } else {
-      this.status = { valid: false, reason: result.reason || "授权码无效" };
-    }
-    return this.status;
-  }
-
-  async activate(code) {
-    const trimmed = (code || "").trim();
-    if (!trimmed) {
-      this.status = { valid: false, reason: "授权码为空" };
-      return this.status;
-    }
-    const result = await verifyLicenseCode(trimmed, this.pluginId, this.app);
-    if (result.valid) {
-      this.settings.licenseCode = trimmed;
-      this.settings.licenseLastOnlineAt = Date.now();
-      this.status = { valid: true, payload: result.payload, source: result.source || "offline" };
-      return this.status;
-    }
-    this.status = { valid: false, reason: result.reason || "激活失败" };
-    return this.status;
-  }
-
-  clear() {
-    this.settings.licenseCode = "";
-    this.status = { valid: false, reason: "已清除授权" };
-  }
-}
-
-// Sibling plugins that may hold an inherited Crisp license. Order only affects preference.
-const CRISP_SIBLING_PLUGIN_IDS = [
-  "crisp-mind",
-  "crisp-pulse",
-  "crisp-focus",
-  "crisp-file-explorer",
-  "crisp-base",
-  "crisp-recall",
-  "crisp-annotations",
-  "crisp-reading-rail",
-  "crisp-asr",
-  "crisp-visual"
-];
-
-let lastInheritNote = "";
-
-function collectVaultCrispLicenseCandidates(app) {
-  if (!app) return [];
-  const seen = new Set();
-  const candidates = [];
-  const add = (code) => {
-    if (typeof code !== "string") return;
-    const trimmed = code.trim();
-    if (!trimmed.includes(".") || seen.has(trimmed)) return;
-    seen.add(trimmed);
-    candidates.push(trimmed);
-  };
-
-  // Loaded plugins first: their settings are already parsed in memory.
-  for (const pid of CRISP_SIBLING_PLUGIN_IDS) {
-    if (pid === "crisp-mind") continue;
-    add(app.plugins?.plugins?.[pid]?.settings?.licenseCode);
-  }
-
-  // Then on-disk data.json, which also covers plugins that are installed but not loaded.
-  try {
-    const pathMod = typeof require === "function" ? require("path") : null;
-    const fsMod = typeof require === "function" ? require("fs") : null;
-    if (pathMod && fsMod) {
-      const basePath = app.vault?.adapter?.basePath || (app.vault?.adapter?.getBasePath ? app.vault.adapter.getBasePath() : "");
-      const pluginsDir = basePath ? pathMod.join(basePath, ".obsidian", "plugins") : "";
-      if (pluginsDir && fsMod.existsSync(pluginsDir)) {
-        for (const d of fsMod.readdirSync(pluginsDir)) {
-          if (!d.startsWith("crisp-") || d === "crisp-mind") continue;
-          const dataPath = pathMod.join(pluginsDir, d, "data.json");
-          if (!fsMod.existsSync(dataPath)) continue;
-          try {
-            const data = JSON.parse(fsMod.readFileSync(dataPath, "utf8"));
-            add(data?.licenseCode || data?.settings?.licenseCode);
-          } catch (e) {}
-        }
-      }
-    }
-  } catch (e) {}
-  return candidates;
-}
-
-// Returns a license code that is actually usable here, or null. Candidates are checked locally
-// (no extra network round trips) so a stale or differently-scoped code can no longer shadow a
-// valid one. The adopted code still goes through the online device check afterwards.
-async function discoverVaultCrispLicense(app) {
-  lastInheritNote = "";
-  const candidates = collectVaultCrispLicenseCandidates(app);
-  if (!candidates.length) return null;
-  const reasons = [];
-  for (const code of candidates) {
-    const local = await verifyLicenseCode(code, "crisp-mind", app, null, { online: false });
-    if (local.valid) return code;
-    reasons.push(local.reason);
-  }
-  lastInheritNote = `库内找到 ${candidates.length} 个 Crisp 授权，但均不可用于 Crisp Mind：${reasons[0]}。可在下方手动填写授权码。`;
-  return null;
-}
 
 /* ==========================================================================
    Data Model & Markdown Converter
@@ -2965,10 +2669,6 @@ class CrispMindEditView extends TextFileView {
     return CRISP_MIND_ICON_ID;
   }
 
-  isLicensed() {
-    return typeof this.plugin?.isLicensed === "function" ? this.plugin.isLicensed() : true;
-  }
-
   getViewData() {
     if (!this.mindDoc) return "";
     if (this.readOnly || !this.dirty) return this.originalData || "";
@@ -2986,7 +2686,7 @@ class CrispMindEditView extends TextFileView {
     this.dirty = false;
     this.baseReadOnly = !this.file?.path?.endsWith(".mind.md") && !this.file?.path?.endsWith(".mind");
     this.sourceWarning = this.baseReadOnly ? null : inspectMindSource(data);
-    this.readOnly = this.baseReadOnly || !this.isLicensed() || !!this.sourceWarning;
+    this.readOnly = this.baseReadOnly || !!this.sourceWarning;
     this.saveError = null;
     // Only drop content to empty document if JSON itself is corrupt/unsafe.
     // For non-destructive warnings (like outline mismatch or extra body), keep parsed mindDoc visible in read-only mode.
@@ -3111,35 +2811,6 @@ class CrispMindEditView extends TextFileView {
     await this.save();
     this.canvasController?.destroy();
     await super.onClose();
-  }
-
-  openLicenseSettings() {
-    this.plugin.openLicenseSettings();
-  }
-
-  requireLicense(feature) {
-    return this.plugin.requireLicense(feature);
-  }
-
-  refreshLicenseAccess() {
-    const nextReadOnly = this.baseReadOnly || !!this.sourceWarning || !this.isLicensed();
-    if (nextReadOnly === this.readOnly) {
-      this.renderToolbar?.();
-      return;
-    }
-    const wasDirty = this.dirty;
-    this.readOnly = nextReadOnly;
-    if (this.canvasController) {
-      this.canvasController.destroy();
-      this.canvasController = null;
-    }
-    this.initViewUI();
-    if (this.readOnly && wasDirty) this.setSaveState("未激活 · 有未保存修改", true);
-    else if (!this.readOnly && wasDirty) {
-      this.setSaveState("待保存");
-      this.requestSave();
-    }
-    new Notice(this.readOnly ? "Crisp Mind 未激活，已切换为只读预览。" : "Crisp Mind 授权已生效，编辑功能已解锁。");
   }
 
   initViewUI() {
@@ -3268,16 +2939,11 @@ class CrispMindEditView extends TextFileView {
     this.renderToolbar();
     this.saveStatusEl = container.createDiv({cls:"crisp-mind-save-status"});
     this.saveStatusEl.setAttribute("role", "status");
-    const licensed = this.isLicensed();
     this.setSaveState(
-      this.sourceWarning || (this.readOnly ? (licensed ? "只读大纲预览" : "未激活 · 只读预览") : "已保存"),
+      this.sourceWarning || (this.readOnly ? "只读大纲预览" : "已保存"),
       !!this.sourceWarning
     );
-    if (!licensed && !this.sourceWarning) {
-      const banner = container.createDiv({ cls: "crisp-mind-license-banner" });
-      banner.createSpan({ text: "Crisp Mind 未激活 · 当前为只读预览" });
-      banner.createEl("button", { text: "打开授权设置" }).addEventListener("click", () => this.openLicenseSettings());
-    } else if (this.readOnly) {
+    if (this.readOnly) {
       const hint = container.createDiv({cls: "crisp-mind-hint"});
       hint.textContent = "大纲预览 · 原笔记保持不变";
     }
@@ -3582,7 +3248,6 @@ class CrispMindEditView extends TextFileView {
   }
 
   promptBoundary(node, existing = null) {
-    if (!this.requireLicense("边界编辑")) return;
     new CrispMindPromptModal(this.app, {
       title: existing ? "编辑边界" : "添加边界",
       value: existing?.label || "",
@@ -3592,7 +3257,6 @@ class CrispMindEditView extends TextFileView {
   }
 
   promptSummary(node, existing = null) {
-    if (!this.requireLicense("概要编辑")) return;
     new CrispMindPromptModal(this.app, {
       title: existing ? "编辑概要" : "添加概要",
       value: existing?.label || "",
@@ -3602,7 +3266,6 @@ class CrispMindEditView extends TextFileView {
   }
 
   promptRelation(nodes) {
-    if (!this.requireLicense("关系编辑")) return;
     const from = nodes[0], to = nodes[1];
     const existing = (this.canvasController.docData.relations || []).find(relation =>
       (relation.from === from.id && relation.to === to.id) || (relation.from === to.id && relation.to === from.id)
@@ -3616,7 +3279,6 @@ class CrispMindEditView extends TextFileView {
   }
 
   showRelationMenu(relation, event) {
-    if (!this.requireLicense("关系编辑")) return;
     const menu = new Menu();
     menu.addItem(item => item.setTitle("编辑关系标签").setIcon("pencil").onClick(() => {
       new CrispMindPromptModal(this.app, {
@@ -3631,7 +3293,6 @@ class CrispMindEditView extends TextFileView {
   }
 
   showSummaryMenu(summary, event) {
-    if (!this.requireLicense("概要编辑")) return;
     const node = this.canvasController.findNode(summary.nodeId);
     const menu = new Menu();
     menu.addItem(item => item.setTitle("编辑概要标签").setIcon("pencil").onClick(() => node && this.promptSummary(node, summary)));
@@ -3700,7 +3361,7 @@ class CrispMindEditView extends TextFileView {
     }
     // Layout Switcher
     this.createToolbarButton("layout-grid", "切换布局（切换后可点击适应画布）", (e) => {
-      if (!this.requireLicense("布局切换") || this.readOnly) return;
+      if (this.readOnly) return;
       const menu = new Menu();
       menu.addItem((i) => i.setTitle("逻辑结构图 (从左向右)").onClick(() => this.canvasController.setLayout("logicalStructure")));
       menu.addItem((i) => i.setTitle("经典思维导图 (双向发散)").onClick(() => this.canvasController.setLayout("mindMap")));
@@ -3713,7 +3374,7 @@ class CrispMindEditView extends TextFileView {
 
     // Theme Switcher
     this.createToolbarButton("palette", "切换 Crisp 质感调色盘", (e) => {
-      if (!this.requireLicense("主题切换") || this.readOnly) return;
+      if (this.readOnly) return;
       const menu = new Menu();
       menu.addItem((i) => i.setTitle("Crisp Obsidian (系统自适应)").onClick(() => this.canvasController.setTheme("crisp-obsidian")));
       menu.addItem((i) => i.setTitle("Crisp Cupertino (经典灰蓝)").onClick(() => this.canvasController.setTheme("crisp-cupertino")));
@@ -3732,7 +3393,6 @@ class CrispMindEditView extends TextFileView {
     });
 
     this.createToolbarButton("presentation", "导图演示模式", () => {
-      if (!this.requireLicense("演示模式")) return;
       if (this.canvasController.presentationActive) this.canvasController.stopPresentation();
       new CrispMindPresentationModal(this.app, this).open();
     });
@@ -3747,7 +3407,6 @@ class CrispMindEditView extends TextFileView {
     });
 
     this.createToolbarButton("panel-right", "节点样式与备注", () => {
-      if (!this.requireLicense("节点样式与备注")) return;
       if (this.inspectorOpen) this.closeInspector();
       else this.openInspector();
     });
@@ -3760,7 +3419,6 @@ class CrispMindEditView extends TextFileView {
     });
 
     this.createToolbarButton("history", "快照与恢复", () => {
-      if (!this.requireLicense("快照与恢复")) return;
       void this.showRecovery();
     });
     if (!this.readOnly) this.createToolbarButton("save", "保存 / 冲突处理", (e) => {
@@ -3771,7 +3429,6 @@ class CrispMindEditView extends TextFileView {
     });
     // Export Modal Trigger
     this.createToolbarButton("download", "导出思维导图 (PNG / PDF / SVG)", () => {
-      if (!this.requireLicense("导出思维导图")) return;
       new CrispMindExportModal(this.app, this).open();
     });
 
@@ -4615,23 +4272,6 @@ class CrispMindPlugin extends Plugin {
   async onload() {
     await this.loadSettings();
 
-    this.licenseManager = new CrispMindLicenseManager(this.app, this.settings);
-
-    if (!this.settings.licenseCode) {
-      const vaultLicense = await discoverVaultCrispLicense(this.app);
-      if (vaultLicense) {
-        this.settings.licenseCode = vaultLicense;
-        await this.saveSettings();
-        console.log("Crisp Mind: 已继承库内可用的 Crisp 授权");
-      } else if (lastInheritNote) {
-        console.warn("Crisp Mind: " + lastInheritNote);
-      }
-    }
-
-    if (this.settings.licenseCode) {
-      void this.licenseManager.validateCurrentLicense().then(() => this.refreshLicenseViews());
-    }
-
     try {
       addIcon(CRISP_MIND_ICON_ID, CRISP_MIND_SVG);
       addIcon("crisp-mind-logo", CRISP_MIND_SVG);
@@ -4705,31 +4345,7 @@ class CrispMindPlugin extends Plugin {
     this.addSettingTab(new CrispMindSettingTab(this.app, this));
   }
 
-  isLicensed() {
-    return !!this.licenseManager?.isLicensed?.();
-  }
-
-  openLicenseSettings() {
-    const setting = this.app.setting;
-    setting?.open?.();
-    setting?.openTabById?.(this.manifest.id);
-  }
-
-  requireLicense(feature = "此功能") {
-    if (this.isLicensed()) return true;
-    new Notice(`🔒 ${feature}需要激活 Crisp Mind，已为你打开授权设置。`);
-    this.openLicenseSettings();
-    return false;
-  }
-
-  refreshLicenseViews() {
-    this.app.workspace.getLeavesOfType(VIEW_TYPE_CRISP_MIND).forEach(leaf => {
-      leaf.view?.refreshLicenseAccess?.();
-    });
-  }
-
   async createNewMindMap(folderPath = "") {
-    if (!this.requireLicense("新建思维导图")) return;
     const fileName = `未命名思维导图 ${new Date().toISOString().slice(0, 10)}.mind.md`;
     const basePath = folderPath ? `${folderPath}/${fileName}` : fileName;
     let fullPath = basePath, suffix = 2;
@@ -4830,8 +4446,6 @@ class CrispMindSettingTab extends PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     this.plugin = plugin;
-    this.licenseDraft = plugin.settings?.licenseCode || "";
-    this.isCheckingLicense = false;
   }
 
   display() {
@@ -4958,91 +4572,7 @@ class CrispMindSettingTab extends PluginSettingTab {
         });
       });
 
-    // Card 2: 软件授权
-    const licenseGroup = createGroup(
-      "软件授权",
-      "本地 Ed25519 签名验证与在线设备校验，支持离线使用；支持 Crisp Suite 系列授权。",
-      true
-    );
-
-    const statusSetting = new Setting(licenseGroup)
-      .setName("当前激活状态");
-
-    const status = this.plugin.licenseManager ? this.plugin.licenseManager.getStatus() : { valid: false, reason: "未初始化" };
-    if (status.valid && status.payload) {
-      const owner = status.payload.userName || "Crisp 用户";
-      const expiry = status.payload.expiresAt
-        ? `，到期时间: ${String(status.payload.expiresAt).split("T")[0]}`
-        : "";
-      const verification = status.source === "offline" ? "离线验证" : "在线验证";
-      statusSetting.setDesc(`✅ 已激活（${verification}，授权给: ${owner}${expiry}）`);
-    } else if (this.plugin.settings.licenseCode) {
-      statusSetting.setDesc(`❌ 未激活（${status.reason || "授权码无效"}）`);
-    } else if (lastInheritNote) {
-      statusSetting.setDesc(`🔒 未激活。${lastInheritNote}`);
-    } else {
-      statusSetting.setDesc("🔒 未激活（输入 Crisp 授权码以激活完整功能）");
-    }
-
-    if (status.valid) {
-      statusSetting.addButton((btn) =>
-        btn
-          .setButtonText("清除授权")
-          .onClick(async () => {
-            this.plugin.licenseManager?.clear();
-            this.licenseDraft = "";
-            await this.plugin.saveSettings();
-            this.plugin.refreshLicenseViews();
-            new Notice("Crisp Mind: 已清除当前授权码");
-            this.display();
-          })
-      );
-    }
-
-    new Setting(licenseGroup)
-      .setName("输入授权码")
-      .setDesc("支持 Crisp 系列激活码（全家桶或单款均可）。启动时自动扫描仓库内其他 Crisp 插件，采用其中第一个确实包含 Crisp Mind 权限的授权；单款授权不含 Crisp Mind 时不会被继承。")
-      .addText((text) => {
-        text.inputEl.type = "password";
-        text
-          .setPlaceholder("粘贴 Crisp 授权码...")
-          .setValue(this.licenseDraft || this.plugin.settings.licenseCode || "")
-          .onChange((value) => {
-            this.licenseDraft = value.trim();
-          });
-      })
-      .addButton((btn) => {
-        btn
-          .setButtonText(this.isCheckingLicense ? "验证中..." : "激活 / 重新验证")
-          .setCta()
-          .setDisabled(this.isCheckingLicense)
-          .onClick(async () => {
-            const codeToVerify = this.licenseDraft || this.plugin.settings.licenseCode;
-            if (!codeToVerify) {
-              new Notice("请先输入授权码");
-              return;
-            }
-            this.isCheckingLicense = true;
-            this.display();
-            try {
-              const res = await this.plugin.licenseManager?.activate(codeToVerify);
-              await this.plugin.saveSettings();
-              if (res && res.valid) {
-                this.plugin.refreshLicenseViews();
-                new Notice(`🎉 Crisp Mind 激活成功！欢迎使用，${res.payload?.userName || "Crisp 用户"}`);
-              } else {
-                new Notice(`❌ 激活未通过: ${res?.reason || "未知原因"}`);
-              }
-            } catch (err) {
-              new Notice(`激活异常: ${err.message}`);
-            } finally {
-              this.isCheckingLicense = false;
-              this.display();
-            }
-          });
-      });
-
-    // Card 3: 关于
+    // Card 2: 关于
     renderAboutCard(
       containerEl,
       "Crisp Mind",

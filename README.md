@@ -36,7 +36,6 @@ Part of the **Crisp Series** for Obsidian by [letschips](https://github.com/lets
   - **高清 PDF**: 生成符合 PDF-1.4 格式的标准 PDF 文档（2x 高清光栅化封装，非矢量），保留真实排版与清晰度，适合长效打印与归档交流。
 - 🔗 **Markdown Outline & Bi-Directional Linking**: 首创 `.mind.md` 混合存储架构，前半部分为纯文本大纲，尾部隔离数据存储。原生支持 Obsidian 全局搜索、快捷切换（Quick Switcher）与反向链接网络。
 - 🛡️ **Local-First & Snapshot Protection**: 导图解析、节点测量、布局运算与导出渲染全部在本地完成，笔记内容不出设备；破坏性改动前自动写入快照防丢。
-- 🔑 **Crisp Authorization**: 基于 Ed25519 非对称公钥密码学本地验签。全家桶授权覆盖全部插件；启动时自动扫描仓库内其它 Crisp 插件，采用其中第一个确实包含 Crisp Mind 权限的授权，作用于其它插件的单款授权不会被误继承。
 
 ---
 
@@ -91,20 +90,9 @@ Part of the **Crisp Series** for Obsidian by [letschips](https://github.com/lets
 
 ---
 
-## ⚙️ Activation / 授权激活
-
-Crisp Mind 是 **Crisp 插件套件** 的成员之一。
-- 未激活时可打开并只读预览 `.mind.md`、搜索和大纲导航；新建、编辑、保存、样式备注、关系边界概要、布局主题、演示与导出需要有效授权。
-- 若您已在同一设备中激活过其它 Crisp 插件（如 Crisp Pulse、Crisp Focus、Crisp Visual 等），Crisp Mind 启动时会**自动继承**其中一个授权，无需重复配置。
-- 继承只采用**确实包含 Crisp Mind 权限**的授权：全家桶授权一定可用；仅授权其它单款插件的授权码不会被继承，此时需单独激活 Crisp Mind。
-- 您也可以进入 **设置 → Crisp Mind** 手动输入激活码进行验证。
-
----
-
 ## 🔒 Privacy & Local-First Policy / 隐私与本地优先政策
 
 - **纯本地处理**：所有思维导图解析、节点测量、布局运算与导出渲染均在您的本地设备运行，没有任何笔记内容、大纲或附件上传云端。
-- **透明密码学校验**：授权校验采用 Ed25519 非对称签名在本地完成。仅当库内已存在激活码时，插件加载、激活或手动验证会向官方授权接口 `license.letschips.xyz` 发送一次轻量设备核验请求，内容仅含授权码、设备标识与插件 ID，超时 2.5 秒。断网或核验不可达时自动回退到本地签名校验，不影响离线使用与冷启动。
 
 ---
 

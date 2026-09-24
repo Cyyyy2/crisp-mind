@@ -3,28 +3,9 @@ const assert = require("node:assert/strict");
 const path = require("node:path");
 const fs = require("node:fs");
 const vm = require("node:vm");
-const { generateKeyPairSync, sign: edSign } = require("node:crypto");
-
-// Locally generated Ed25519 pair used to sign license fixtures; setupTestContext swaps this
-// public key into the plugin source so no real signing key is ever needed in tests.
-const licenseKeys = generateKeyPairSync("ed25519");
-const licensePublicPem = licenseKeys.publicKey.export({ type: "spki", format: "pem" }).toString();
-function makeLicenseCode(overrides = {}) {
-  const payload = {
-    product: "Crisp Suite",
-    licenseId: "TEST-LICENSE",
-    userName: "Test",
-    expiresAt: "2999-01-01T00:00:00Z",
-    features: ["all"],
-    ...overrides,
-  };
-  const data = Buffer.from(JSON.stringify(payload)).toString("base64url");
-  const signature = edSign(null, Buffer.from(data), licenseKeys.privateKey).toString("base64url");
-  return `${data}.${signature}`;
-}
 
 // Test harness context simulating Obsidian environment
-function setupTestContext(publicKeyPem) {
+function setupTestContext() {
   class Plugin {
     registerView() {}
     registerEvent() {}
@@ -111,14 +92,9 @@ function setupTestContext(publicKeyPem) {
   };
 
   const mainPath = path.join(__dirname, "../main.js");
-  let source = fs.readFileSync(mainPath, "utf8");
-  // Swap in a locally generated key so license fixtures can be signed in the test.
-  if (publicKeyPem) {
-    assert.match(source, /-----BEGIN PUBLIC KEY-----/);
-    source = source.replace(/-----BEGIN PUBLIC KEY-----[\s\S]*?-----END PUBLIC KEY-----/, publicKeyPem.trim());
-  }
+  const source = fs.readFileSync(mainPath, "utf8");
   const code = source +
-    "\nmodule.exports.helpers = { inlineEditorFrame, normalizeMindLinkText, mindNodeLink, inspectMindSource, searchMindNodes, normalizePresentationSteps, normalizeNodeStyle, normalizeMindAnnotations, CrispMindCanvas, CrispMindEditView, parseMindMarkdown, assembleMindMarkdown, markdownOutlineToTree, treeToMarkdownOutline, validateAndRepairTree, extractNodeToTopicContent, getComputedThemeConfig, verifyLicenseCode, discoverVaultCrispLicense, collectVaultCrispLicenseCandidates, CrispMindLicenseManager, renderAboutCard, CrispMindExporter };";
+    "\nmodule.exports.helpers = { inlineEditorFrame, normalizeMindLinkText, mindNodeLink, inspectMindSource, searchMindNodes, normalizePresentationSteps, normalizeNodeStyle, normalizeMindAnnotations, CrispMindCanvas, CrispMindEditView, parseMindMarkdown, assembleMindMarkdown, markdownOutlineToTree, treeToMarkdownOutline, validateAndRepairTree, extractNodeToTopicContent, getComputedThemeConfig, renderAboutCard, CrispMindExporter };";
 
   vm.runInNewContext(code, context);
   return context.module.exports;
@@ -599,7 +575,7 @@ function savedViewFixture() {
   let disk=helpers.assembleMindMarkdown(helpers.parseMindMarkdown('# Root\n- One'));
   const backups=[];let fail=false;
   v.file={path:'test.mind.md',basename:'test.mind',parent:{path:''}};
-  v.plugin={settings:{autoBackup:true},manifest:{id:'crisp-mind'},isLicensed:()=>true};
+  v.plugin={settings:{autoBackup:true},manifest:{id:'crisp-mind'}};
   v.app={vault:{configDir:'.obsidian',adapter:{exists:async()=>true,mkdir:async()=>{},write:async(p,t)=>backups.push(JSON.parse(t))},process:async(file,fn)=>{if(fail)throw Error('disk full');disk=fn(disk);}}};
   v.initViewUI=()=>{};v.requestSave=()=>{};v.notifyPulseContribution=()=>{};
   v.setViewData(disk,true);v.mindDoc.data.root.data.text='Changed';v.dirty=true;
@@ -627,18 +603,6 @@ test('external update while dirty does not replace local edits',()=>{
 test('corrupt managed file remains read-only and byte-preserved',()=>{
   const {v}=savedViewFixture();v.dirty=false;const raw='BROKEN';v.setViewData(raw,true);
   assert.equal(v.readOnly,true);assert.equal(v.getViewData(),raw);
-});
-test('unlicensed mind views open read-only and keep on-disk content unchanged',async()=>{
-  const f=savedViewFixture();
-  f.v.plugin.isLicensed=()=>false;
-  f.v.setViewData(f.v.originalData,true);
-  assert.equal(f.v.readOnly,true);
-  f.v.mindDoc.data.root.data.text='Should not persist';
-  f.v.dirty=true;
-  assert.equal(f.v.getViewData(),f.v.originalData);
-  await f.v.save();
-  assert.ok(f.disk().includes('# Root'));
-  assert.ok(!f.disk().includes('Should not persist'));
 });
 
 test('read-only blocks structural mutation and undo',()=>{
@@ -811,71 +775,6 @@ test('inline editor validation error does not deadlock canvas', () => {
   inputEl.blur();
   assert.equal(canvas.editor, null, 'Editor must be cleared on blur error');
   assert.equal(inputEl.parentNode, null, 'Input element must be removed from parent');
-});
-
-test('40. CrispMindLicenseManager validates initial status, empty code and clearing', async () => {
-  const { helpers } = setupTestContext();
-  const settings = { licenseCode: '' };
-  const manager = new helpers.CrispMindLicenseManager({}, settings);
-  assert.equal(manager.getStatus().valid, false);
-
-  const emptyRes = await manager.activate('');
-  assert.equal(emptyRes.valid, false);
-  assert.match(emptyRes.reason, /授权码为空/);
-
-  const invalidRes = await manager.activate('bad.token');
-  assert.equal(invalidRes.valid, false);
-
-  manager.clear();
-  assert.equal(settings.licenseCode, '');
-  assert.equal(manager.getStatus().valid, false);
-});
-
-test('40a. local-only verification accepts a valid code and does not reach the network', async () => {
-  const { helpers } = setupTestContext(licensePublicPem);
-  const res = await helpers.verifyLicenseCode(makeLicenseCode(), 'crisp-mind', {}, null, { online: false });
-  assert.equal(res.valid, true);
-  assert.equal(res.source, 'local');
-});
-
-test('40b. a single-plugin license for another plugin is rejected by Crisp Mind', async () => {
-  const { helpers } = setupTestContext(licensePublicPem);
-  const res = await helpers.verifyLicenseCode(
-    makeLicenseCode({ features: ['crisp-focus'] }), 'crisp-mind', {}, null, { online: false });
-  assert.equal(res.valid, false);
-  assert.match(res.reason, /未包含 crisp-mind 权限/);
-});
-
-test('40c. candidate scan dedupes codes and drops malformed ones', () => {
-  const { helpers } = setupTestContext(licensePublicPem);
-  const good = makeLicenseCode();
-  const app = { plugins: { plugins: {
-    'crisp-pulse': { settings: { licenseCode: good } },
-    'crisp-focus': { settings: { licenseCode: good } },
-    'crisp-base': { settings: { licenseCode: 'no-signature-part' } },
-    'crisp-recall': { settings: {} },
-  } } };
-  assert.deepEqual([...helpers.collectVaultCrispLicenseCandidates(app)], [good]);
-});
-
-test('40d. inheritance skips a license that does not cover Crisp Mind and adopts the usable one', async () => {
-  const { helpers } = setupTestContext(licensePublicPem);
-  const otherScoped = makeLicenseCode({ licenseId: 'SCOPED-ELSEWHERE', features: ['crisp-focus'] });
-  const family = makeLicenseCode({ licenseId: 'FAMILY', features: ['all'] });
-  const app = { plugins: { plugins: {
-    'crisp-pulse': { settings: { licenseCode: otherScoped } },
-    'crisp-focus': { settings: { licenseCode: family } },
-  } } };
-  const adopted = await helpers.discoverVaultCrispLicense(app);
-  assert.equal(adopted, family, 'the first *usable* candidate must win, not the first found');
-});
-
-test('40e. inheritance adopts nothing when no candidate covers Crisp Mind', async () => {
-  const { helpers } = setupTestContext(licensePublicPem);
-  const app = { plugins: { plugins: {
-    'crisp-pulse': { settings: { licenseCode: makeLicenseCode({ features: ['crisp-asr'] }) } },
-  } } };
-  assert.equal(await helpers.discoverVaultCrispLicense(app), null);
 });
 
 test('41. Completed tasks [x] receive task styling and strikethrough', () => {
