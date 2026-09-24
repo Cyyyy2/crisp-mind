@@ -46,6 +46,22 @@ function setupTestContext() {
   class Notice {}
   class Modal { open() {} close() {} }
   class TFile {}
+  const testMenus = [];
+  class Menu {
+    constructor() { this.items = []; testMenus.push(this); }
+    addItem(build) {
+      const item = {
+        setTitle(title) { this.title = title; return this; },
+        setIcon(icon) { this.icon = icon; return this; },
+        onClick(callback) { this.callback = callback; return this; }
+      };
+      build(item);
+      this.items.push(item);
+      return item;
+    }
+    addSeparator() { this.items.push({ separator: true }); }
+    showAtMouseEvent() {}
+  }
 
   const context = {
     require: (mod) => {
@@ -53,7 +69,7 @@ function setupTestContext() {
       if (mod === "util") return require("util");
       if (mod === "fs") return require("fs");
       if (mod === "path") return require("path");
-      return { Plugin, ItemView, TextFileView, Setting, PluginSettingTab, Notice, Modal, TFile, addIcon: () => {}, setIcon: () => {} };
+      return { Plugin, ItemView, TextFileView, Setting, PluginSettingTab, Notice, Modal, TFile, Menu, addIcon: () => {}, setIcon: () => {} };
     },
     URL,
     module: { exports: {} },
@@ -94,9 +110,10 @@ function setupTestContext() {
   const mainPath = path.join(__dirname, "../main.js");
   const source = fs.readFileSync(mainPath, "utf8");
   const code = source +
-    "\nmodule.exports.helpers = { inlineEditorFrame, normalizeMindLinkText, mindNodeLink, inspectMindSource, searchMindNodes, normalizePresentationSteps, normalizeNodeStyle, normalizeMindAnnotations, CrispMindCanvas, CrispMindEditView, parseMindMarkdown, assembleMindMarkdown, markdownOutlineToTree, treeToMarkdownOutline, validateAndRepairTree, extractNodeToTopicContent, getComputedThemeConfig, renderAboutCard, CrispMindExporter };";
+    "\nmodule.exports.helpers = { inlineEditorFrame, normalizeMindLinkText, mindNodeLink, inspectMindSource, searchMindNodes, normalizePresentationSteps, normalizeNodeStyle, normalizeMindAnnotations, createBranchColorMap, sampleCubicBezierPoints, taperedPathFromPoints, relationRouteIntersectsNodes, findOrthogonalRelationRoute, roundedOrthogonalPath, findRelationLabelPosition, getDescendantTaskProgress, createTaskProgressMap, CrispMindCanvas, CrispMindEditView, parseMindMarkdown, assembleMindMarkdown, markdownOutlineToTree, treeToMarkdownOutline, validateAndRepairTree, extractNodeToTopicContent, getComputedThemeConfig, verifyLicenseCode, discoverVaultCrispLicense, collectVaultCrispLicenseCandidates, CrispMindLicenseManager, renderAboutCard, CrispMindExporter };";
 
   vm.runInNewContext(code, context);
+  context.module.exports.testMenus = testMenus;
   return context.module.exports;
 }
 
@@ -243,6 +260,11 @@ test("6. Obsidian Theme Adapter produces valid palette", () => {
   assert.equal(palette.accentColor, "#7c3aed");
   assert.equal(palette.backgroundColor, "#1e1e2e");
   assert.equal(palette.textColor, "#cdd6f4");
+  for (const theme of ["crisp-obsidian", "crisp-cupertino", "crisp-nord", "crisp-mono", "crisp-amber", "crisp-paper"]) {
+    const colors = helpers.getComputedThemeConfig(theme).branchColors;
+    assert.equal(colors.length, 8, `${theme} should provide eight branch colors`);
+    assert.ok(colors.every(color => /^#[\da-f]{6}$/i.test(color)), `${theme} should use explicit SVG-safe colors`);
+  }
 });
 
 test("7. Crisp Paper palette is editorial in light and dark rooms", () => {
@@ -278,6 +300,241 @@ test("9. Presentation steps retain valid notes, drop duplicates, and ignore dele
   assert.deepEqual(Array.from(steps, step => step.nodeId), [one.id, two.id]);
   assert.equal(steps[0].note, "First point");
   assert.equal(steps[1].note, "Second point");
+});
+
+test("branch colors stay tied to root branches and soften at deeper levels", () => {
+  const { helpers } = setupTestContext();
+  assert.equal(typeof helpers.createBranchColorMap, "function");
+  const root = { id: "root", children: [
+    { id: "first", children: [{ id: "first-child", children: [] }] },
+    { id: "second", children: [] }
+  ] };
+  const map = helpers.createBranchColorMap(root, ["#336699", "#993366"], "#ffffff");
+  assert.equal(map.get("first").color, "#336699");
+  assert.equal(map.get("first").branchIndex, 0);
+  assert.equal(map.get("first-child").branchIndex, 0);
+  assert.notEqual(map.get("first-child").color, map.get("first").color);
+  assert.equal(map.get("second").color, "#993366");
+});
+
+test("tapered connector paths are closed, finite, and accept curves and elbows", () => {
+  const { helpers } = setupTestContext();
+  assert.equal(typeof helpers.sampleCubicBezierPoints, "function");
+  assert.equal(typeof helpers.taperedPathFromPoints, "function");
+  const curve = helpers.sampleCubicBezierPoints(
+    { x: 0, y: 0 }, { x: 20, y: 0 }, { x: 20, y: 30 }, { x: 40, y: 30 }, 8
+  );
+  assert.equal(curve.length, 9);
+  const curvePath = helpers.taperedPathFromPoints(curve);
+  const elbowPath = helpers.taperedPathFromPoints([{ x: 0, y: 0 }, { x: 0, y: 20 }, { x: 40, y: 20 }]);
+  assert.match(curvePath, /^M -?\d/);
+  assert.match(curvePath, / Z$/);
+  assert.match(elbowPath, /^M -?\d/);
+  assert.match(elbowPath, / Z$/);
+  assert.doesNotMatch(`${curvePath} ${elbowPath}`, /NaN|Infinity/);
+});
+
+test("fishbone relation routes detour around node boxes and keep labels in clear space", () => {
+  const { helpers } = setupTestContext();
+  assert.equal(typeof helpers.findOrthogonalRelationRoute, "function");
+  assert.equal(typeof helpers.roundedOrthogonalPath, "function");
+  assert.equal(typeof helpers.findRelationLabelPosition, "function");
+  const nodes = [
+    { id: "from", _x: -20, _y: 40, _w: 20, _h: 20 },
+    { id: "blocker", _x: 40, _y: 30, _w: 20, _h: 40 },
+    { id: "to", _x: 100, _y: 40, _w: 20, _h: 20 }
+  ];
+  const route = helpers.findOrthogonalRelationRoute(
+    { x: 0, y: 50 }, { x: 100, y: 50 }, nodes, new Set(["from", "to"]), 8
+  );
+  assert.ok(route.length > 2, "blocked direct link should take a detour");
+  assert.equal(route[0].x, 0);
+  assert.equal(route[0].y, 50);
+  assert.equal(route.at(-1).x, 100);
+  assert.equal(route.at(-1).y, 50);
+  const obstacle = { left: 32, right: 68, top: 22, bottom: 78 };
+  for (let index = 1; index < route.length; index++) {
+    const a = route[index - 1], b = route[index];
+    assert.ok(a.x === b.x || a.y === b.y, "route segments should be orthogonal");
+    if (a.y === b.y && a.y > obstacle.top && a.y < obstacle.bottom) {
+      assert.ok(Math.max(a.x, b.x) <= obstacle.left || Math.min(a.x, b.x) >= obstacle.right);
+    }
+    if (a.x === b.x && a.x > obstacle.left && a.x < obstacle.right) {
+      assert.ok(Math.max(a.y, b.y) <= obstacle.top || Math.min(a.y, b.y) >= obstacle.bottom);
+    }
+  }
+  assert.match(helpers.roundedOrthogonalPath(route), /Q/);
+  const label = helpers.findRelationLabelPosition(route, 44, 22, nodes, 6);
+  assert.ok(label, "route should provide a readable label position");
+  for (const node of nodes) {
+    const overlaps = label.x < node._x + node._w && label.x + label.width > node._x &&
+      label.y < node._y + node._h && label.y + label.height > node._y;
+    assert.equal(overlaps, false, `label overlaps ${node.id}`);
+  }
+});
+
+test("parent task progress counts only descendant Markdown tasks", () => {
+  const { helpers } = setupTestContext();
+  assert.equal(typeof helpers.getDescendantTaskProgress, "function");
+  const parent = { id: "parent", data: { text: "[ ] Parent task" }, children: [
+    { data: { text: "[x] Complete" }, children: [] },
+    { data: { text: "Plain node" }, children: [
+      { data: { text: "[ ] Open" }, children: [] },
+      { data: { text: "[X] Also complete" }, children: [] }
+    ] }
+  ] };
+  const progress = helpers.getDescendantTaskProgress(parent);
+  assert.equal(progress.total, 3);
+  assert.equal(progress.completed, 2);
+  assert.equal(progress.ratio, 2 / 3);
+  assert.equal(typeof helpers.createTaskProgressMap, "function");
+  const progressMap = helpers.createTaskProgressMap({ id: "root", data: { text: "[x] Root" }, children: [parent] });
+  assert.equal(progressMap.get("root").total, 4);
+  assert.equal(progressMap.get("root").completed, 2);
+  assert.equal(progressMap.get("parent").total, 3);
+  assert.equal(progressMap.get("parent").completed, 2);
+  const empty = helpers.getDescendantTaskProgress({ children: [{ data: { text: "No task" } }] });
+  assert.equal(empty.total, 0);
+  assert.equal(empty.completed, 0);
+  assert.equal(empty.ratio, 0);
+});
+
+function fakeSvgNode(tag) {
+  return {
+    tag,
+    attrs: {},
+    children: [],
+    style: {},
+    classList: {
+      add() {},
+      toggle() {}
+    },
+    setAttribute(name, value) { this.attrs[name] = String(value); },
+    appendChild(child) { this.children.push(child); return child; },
+    append(...children) { this.children.push(...children); },
+    addEventListener() {},
+    remove() {}
+  };
+}
+
+function renderCanvasToFakeSvg(canvas, helpers) {
+  canvas.theme = helpers.getComputedThemeConfig("crisp-nord");
+  canvas.branchColorMap = helpers.createBranchColorMap(
+    canvas.docData.root, canvas.theme.branchColors, canvas.theme.backgroundColor
+  );
+  canvas.document = { createElementNS: (_namespace, tag) => fakeSvgNode(tag) };
+  canvas.linesGroup = fakeSvgNode("g");
+  canvas.nodesGroup = fakeSvgNode("g");
+  canvas.nodeElements = new Map();
+  canvas.renderBranch(canvas.docData.root);
+  return canvas;
+}
+
+test("canvas renders tapered branch-colored paths for export and screen", () => {
+  const { canvas, helpers } = canvasFixture();
+  canvas.docData.root.children = [
+    { id: "branch-a", data: { text: "A" }, children: [{ id: "child-a", data: { text: "Child" }, children: [] }] },
+    { id: "branch-b", data: { text: "B" }, children: [] }
+  ];
+  canvas.calculateLayout();
+  renderCanvasToFakeSvg(canvas, helpers);
+  const rootLines = canvas.linesGroup.children;
+  assert.equal(rootLines.length, 3);
+  assert.equal(rootLines[0].attrs.fill, canvas.branchColorMap.get("branch-a").color);
+  assert.equal(rootLines[1].attrs.fill, canvas.branchColorMap.get("child-a").color);
+  assert.match(rootLines[0].attrs.d, / Z$/);
+  assert.equal(rootLines[0].attrs.stroke, "none");
+});
+
+test("all six layouts render finite closed connector ribbons", () => {
+  for (const layout of ["logicalStructure", "mindMap", "organizationStructure", "catalogOrganization", "timeline", "fishbone"]) {
+    const { canvas, helpers } = canvasFixture();
+    canvas.docData.root.children = [
+      { id: "branch-a", data: { text: "A" }, children: [{ id: "child-a", data: { text: "Child A" }, children: [] }] },
+      { id: "branch-b", data: { text: "B" }, children: [{ id: "child-b", data: { text: "Child B" }, children: [] }] }
+    ];
+    canvas.layout = layout;
+    canvas.docData.layout = layout;
+    canvas.calculateLayout();
+    renderCanvasToFakeSvg(canvas, helpers);
+    assert.equal(canvas.linesGroup.children.length, 4, `${layout} should render every tree edge`);
+    for (const path of canvas.linesGroup.children) {
+      assert.match(path.attrs.d, / Z$/, `${layout} connector should be closed`);
+      assert.doesNotMatch(path.attrs.d, /NaN|Infinity/, `${layout} connector should stay finite`);
+    }
+  }
+});
+
+test("collapsed parent keeps an accessible task progress ring for hidden descendants", () => {
+  const { canvas, helpers } = canvasFixture();
+  canvas.docData.root.children = [{
+    id: "parent",
+    data: { text: "Plan", collapsed: true },
+    children: [
+      { id: "done", data: { text: "[x] Done" }, children: [] },
+      { id: "open", data: { text: "[ ] Open" }, children: [] }
+    ]
+  }];
+  canvas.calculateLayout();
+  renderCanvasToFakeSvg(canvas, helpers);
+  const parent = canvas.nodesGroup.children.find(node => node.attrs["data-node-id"] === "parent");
+  const fold = parent.children.find(node => node.attrs["data-collapse"] === "parent");
+  const track = fold.children.find(node => node.attrs.class === "crisp-mind-task-progress-track");
+  assert.equal(track.attrs["data-task-progress"], "1/2");
+  assert.match(fold.attrs["aria-label"], /待办完成 1\/2/);
+  assert.equal(parent.children.some(node => node.attrs["data-node-id"] === "done"), false);
+});
+
+test("linked node menu opens the note in a right split and exposes branch extraction", () => {
+  const plugin = setupTestContext();
+  const opened = [], extracted = [];
+  const node = { id: "branch", data: { text: "Topic [[Notes/Target|Target]]" }, children: [] };
+  const view = {
+    readOnly: false,
+    app: { vault: { getName: () => "Test Vault" } },
+    canvasController: {
+      selectedNodeIds: new Set([node.id]),
+      selectedNodeId: node.id,
+      docData: { root: { id: "root" } }
+    },
+    openLinkedNote: (target, pane) => opened.push([target, pane]),
+    extractCurrentNodeToTopic: () => extracted.push(true)
+  };
+  plugin.helpers.CrispMindEditView.prototype.showNodeMenu.call(view, node, {});
+  const menu = plugin.testMenus.at(-1);
+  const splitAction = menu.items.find(item => item.title === "在右侧分屏打开");
+  const extractAction = menu.items.find(item => item.title === "提炼当前分支为独立笔记");
+  assert.ok(splitAction);
+  assert.ok(extractAction);
+  splitAction.callback();
+  extractAction.callback();
+  assert.deepEqual(opened, [["Notes/Target", "split"]]);
+  assert.equal(extracted.length, 1);
+});
+
+test("linked note split uses Obsidian's adjacent vertical pane and preserves heading", async () => {
+  const { helpers } = setupTestContext();
+  const calls = [];
+  const file = { path: "Notes/Target.md" };
+  const leaf = {
+    openFile: async (openedFile, options) => calls.push(["openFile", openedFile, options])
+  };
+  const view = {
+    file: { path: "Maps/Map.mind.md" },
+    app: {
+      metadataCache: { getFirstLinkpathDest: (path, source) => { calls.push(["resolve", path, source]); return file; } },
+      workspace: {
+        getLeaf: (...args) => { calls.push(["getLeaf", ...args]); return leaf; },
+        revealLeaf: async revealed => calls.push(["revealLeaf", revealed])
+      }
+    }
+  };
+  await helpers.CrispMindEditView.prototype.openLinkedNote.call(view, "Notes/Target#Overview", "split");
+  assert.equal(calls[1][0], "getLeaf");
+  assert.equal(calls[1][1], "split");
+  assert.equal(calls[1][2], "vertical");
+  assert.equal(calls[2][0], "openFile");
+  assert.equal(calls[2][2].eState.subpath, "#Overview");
 });
 
 function canvasFixture() {
@@ -876,6 +1133,79 @@ test('44. Fishbone layout calculates right-side fish head and slanted bones', ()
   assert.ok(b2._y > canvas._fishboneAxis.y, 'b2 should be in the lower half of fishbone');
   assert.ok(b1._spineConnectX, 'b1 should have spine connection coordinate');
   assert.ok(b2._spineConnectX, 'b2 should have spine connection coordinate');
+});
+
+test("fishbone layout keeps branch bones clear of their child node boxes", () => {
+  const { canvas } = canvasFixture();
+  const leaf = (id, text) => ({id, data: {text}, children: []});
+  canvas.docData.root.children = [
+    {id: "upper", data: {text: "Upper factor"}, children: []},
+    {id: "lower", data: {text: "Storage separation"}, children: [
+      leaf("storage-a", "Markdown notes"),
+      leaf("storage-b", "Media sidecar"),
+      leaf("storage-c", "URI links")
+    ]}
+  ];
+  canvas.layout = "fishbone";
+  canvas.calculateLayout();
+  const nodes = canvas.visibleNodes();
+  const overlaps = [];
+  for (let first = 0; first < nodes.length; first++) {
+    for (let second = first + 1; second < nodes.length; second++) {
+      const a = nodes[first], b = nodes[second];
+      const width = Math.min(a._x + a._w, b._x + b._w) - Math.max(a._x, b._x);
+      const height = Math.min(a._y + a._h, b._y + b._h) - Math.max(a._y, b._y);
+      if (width > 0 && height > 0) overlaps.push([a.id, b.id]);
+    }
+  }
+  assert.deepEqual(overlaps, []);
+});
+
+test("bottom toolbar collapses and expands every branch as one undoable action", () => {
+  const {canvas, helpers} = canvasFixture();
+  const buttons = [];
+  const toolbarEl = {
+    innerHTML: "",
+    createDiv() { return {}; },
+    createEl() {
+      const attrs = {};
+      const record = {attrs, click: null};
+      buttons.push(record);
+      return {
+        setAttribute(name, value) { attrs[name] = value; },
+        addEventListener(event, callback) { if (event === "click") record.click = callback; }
+      };
+    }
+  };
+  const view = Object.create(helpers.CrispMindEditView.prototype);
+  Object.assign(view, {toolbarEl, canvasController: canvas, readOnly: false});
+  view.renderToolbar();
+  const collapse = buttons.find(button => button.attrs["aria-label"] === "收起所有分支");
+  const expand = buttons.find(button => button.attrs["aria-label"] === "展开所有分支");
+  assert.equal(typeof collapse?.click, "function");
+  assert.equal(typeof expand?.click, "function");
+
+  const root = canvas.docData.root;
+  const nonRootBranches = () => {
+    const branches = [];
+    const collectBranches = node => {
+      if (node.children?.length) branches.push(node);
+      (node.children || []).forEach(collectBranches);
+    };
+    collectBranches(canvas.docData.root);
+    return branches.filter(node => node.id !== canvas.docData.root.id);
+  };
+  collapse.click();
+  assert.equal(root.data.collapsed, false);
+  assert.ok(nonRootBranches().every(node => node.data.collapsed));
+  assert.deepEqual([...canvas.visibleNodes()].map(node => node.id), [root.id, ...root.children.map(node => node.id)]);
+
+  expand.click();
+  assert.ok(canvas.visibleNodes().some(node => node.id === root.children[0].children[0].id));
+  canvas.undo();
+  assert.ok(nonRootBranches().every(node => node.data.collapsed), "one undo should reverse the bulk expand");
+  canvas.redo();
+  assert.ok(canvas.visibleNodes().some(node => node.id === root.children[0].children[0].id));
 });
 
 test('45. CrispMindExporter computes accurate BoundingBox and generates standalone SVG', () => {
